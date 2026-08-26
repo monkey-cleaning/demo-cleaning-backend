@@ -1,0 +1,502 @@
+diff --git a/src/jobs/syncQuickbooks.js b/src/jobs/syncQuickbooks.js
+index 5881b06..aa61160 100644
+--- a/src/jobs/syncQuickbooks.js
++++ b/src/jobs/syncQuickbooks.js
+@@ -19,11 +19,19 @@ function getSyncFromDate(override) {
+ 
+ // ─── HELPERS (misma normalización que quickbooksRoutes.js) ───────────────────
+ 
++// Cualquier invoice que llega acá viene de la API de QB — por definición ya
++// existe/fue publicada. Nunca debe volver a "draft" (eso solo lo asigna
++// createDraftInvoice() para invoices que todavía no se mandaron a QB y por
++// eso ni aparecen en getInvoicesSince). El caso anterior devolvía "draft" para
++// cualquier invoice no pagada y no vencida, pisando "published"/"sent" reales
++// en cada sync (nightly + cada reinicio del server) — bug crítico, corregido
++// LAB, ago 2026. "sent" se deriva de EmailStatus, que QB sí trackea.
+ function resolveInvoiceStatus(inv) {
+   if (inv.Balance === 0) return "paid";
+   const due = new Date(inv.DueDate);
+   if (due < new Date()) return "overdue";
+-  return "draft"; // "pending" en QB → 'draft' en tu ENUM
++  if (inv.EmailStatus === "EmailSent") return "sent";
++  return "published";
+ }
+ 
+ function normalizeInvoice(inv) {
+@@ -161,7 +169,9 @@ async function reconcileQbPayments(rawPayments) {
+       .maybeSingle();
+ 
+     if (error || !paymentRow) {
+-      console.warn(`[QB Sync] ⚠️  No se encontró payment QB#${pay.Id} para reconciliar`);
++      console.warn(
++        `[QB Sync] ⚠️  No se encontró payment QB#${pay.Id} para reconciliar`,
++      );
+       skipped++;
+       continue;
+     }
+@@ -182,7 +192,10 @@ async function reconcileQbPayments(rawPayments) {
+       else if (status === "resolved") reconciled++;
+       else skipped++; // skipped_no_client | already_reconciled
+     } catch (reconErr) {
+-      console.error(`[QB Sync] ❌ Error reconciliando payment QB#${pay.Id}:`, reconErr.message);
++      console.error(
++        `[QB Sync] ❌ Error reconciliando payment QB#${pay.Id}:`,
++        reconErr.message,
++      );
+       skipped++;
+     }
+   }
+diff --git a/src/routes/invoiceRoutes.js b/src/routes/invoiceRoutes.js
+index 869030a..735dd22 100644
+--- a/src/routes/invoiceRoutes.js
++++ b/src/routes/invoiceRoutes.js
+@@ -8,7 +8,7 @@ import {
+   publishInvoiceToQB,
+   sendInvoiceEmail,
+ } from "../services/invoiceService.js";
+-import { requireAdmin } from '../middleware/requireAdmin.js';
++import { requireAdmin } from "../middleware/requireAdmin.js";
+ 
+ const router = Router();
+ 
+@@ -20,7 +20,7 @@ router.use(requireAdmin);
+  *
+  * Body:
+  * {
+- *   lead_id:      string (UUID, requerido),
++ *   client_id:    string (UUID, requerido),
+  *   line_items: [{ description: string, amount: number }],
+  *   due_date:     string (YYYY-MM-DD, opcional),
+  *   notes:        string (opcional)
+@@ -28,23 +28,33 @@ router.use(requireAdmin);
+  */
+ router.post("/", async (req, res) => {
+   try {
+-    const { lead_id, line_items, due_date, notes } = req.body;
++    const { client_id, line_items, due_date, notes } = req.body;
+ 
+-    if (!lead_id) {
+-      return res.status(400).json({ error: "lead_id es requerido" });
++    if (!client_id) {
++      return res.status(400).json({ error: "client_id es requerido" });
+     }
+     if (!Array.isArray(line_items) || line_items.length === 0) {
+       return res.status(400).json({ error: "line_items no puede estar vacío" });
+     }
+     for (const item of line_items) {
+-      if (!item.description || typeof item.amount !== "number" || item.amount <= 0) {
++      if (
++        !item.description ||
++        typeof item.amount !== "number" ||
++        item.amount <= 0
++      ) {
+         return res.status(400).json({
+-          error: "Cada line_item debe tener description (string) y amount (number > 0)",
++          error:
++            "Cada line_item debe tener description (string) y amount (number > 0)",
+         });
+       }
+     }
+ 
+-    const invoice = await createDraftInvoice({ lead_id, line_items, due_date, notes });
++    const invoice = await createDraftInvoice({
++      client_id,
++      line_items,
++      due_date,
++      notes,
++    });
+     return res.status(201).json(invoice);
+   } catch (err) {
+     console.error("❌ POST /api/invoices:", err.message);
+@@ -58,7 +68,7 @@ router.post("/", async (req, res) => {
+  *
+  * Query params:
+  *   status    → draft | published | sent | paid | overdue
+- *   lead_id   → UUID
++ *   client_id → UUID
+  *   search    → string (matches customer name or doc number)
+  *   from      → YYYY-MM-DD
+  *   to        → YYYY-MM-DD
+@@ -67,11 +77,19 @@ router.post("/", async (req, res) => {
+  */
+ router.get("/", async (req, res) => {
+   try {
+-    const { status, lead_id, search, from, to, page = 1, limit = 20 } = req.query;
++    const {
++      status,
++      client_id,
++      search,
++      from,
++      to,
++      page = 1,
++      limit = 20,
++    } = req.query;
+ 
+     const result = await getDraftInvoices({
+       status,
+-      lead_id,
++      client_id,
+       search,
+       from,
+       to,
+@@ -93,7 +111,8 @@ router.get("/", async (req, res) => {
+ router.get("/:id", async (req, res) => {
+   try {
+     const invoice = await getDraftInvoiceById(req.params.id);
+-    if (!invoice) return res.status(404).json({ error: "Invoice no encontrada" });
++    if (!invoice)
++      return res.status(404).json({ error: "Invoice no encontrada" });
+     return res.json(invoice);
+   } catch (err) {
+     console.error("❌ GET /api/invoices/:id:", err.message);
+@@ -119,10 +138,16 @@ router.patch("/:id", async (req, res) => {
+ 
+     if (line_items !== undefined) {
+       if (!Array.isArray(line_items) || line_items.length === 0) {
+-        return res.status(400).json({ error: "line_items no puede estar vacío" });
++        return res
++          .status(400)
++          .json({ error: "line_items no puede estar vacío" });
+       }
+       for (const item of line_items) {
+-        if (!item.description || typeof item.amount !== "number" || item.amount <= 0) {
++        if (
++          !item.description ||
++          typeof item.amount !== "number" ||
++          item.amount <= 0
++        ) {
+           return res.status(400).json({
+             error: "Cada line_item debe tener description y amount > 0",
+           });
+@@ -130,7 +155,11 @@ router.patch("/:id", async (req, res) => {
+       }
+     }
+ 
+-    const updated = await updateDraftInvoice(req.params.id, { line_items, due_date, notes });
++    const updated = await updateDraftInvoice(req.params.id, {
++      line_items,
++      due_date,
++      notes,
++    });
+     return res.json(updated);
+   } catch (err) {
+     console.error("❌ PATCH /api/invoices/:id:", err.message);
+@@ -163,7 +192,7 @@ router.delete("/:id", async (req, res) => {
+  * Envía la invoice a QuickBooks y la marca como "published".
+  *
+  * Pasos internos:
+- *  1. Trae el lead vinculado para obtener el customer de QB (o lo crea).
++ *  1. Trae el cliente vinculado para obtener el customer de QB (o lo crea).
+  *  2. Crea la invoice en QB via createInvoice().
+  *  3. Guarda el quickbooks_invoice_id en Supabase y cambia status → "published".
+  */
+@@ -198,4 +227,4 @@ router.post("/:id/send", async (req, res) => {
+   }
+ });
+ 
+-export default router;
+\ No newline at end of file
++export default router;
+diff --git a/src/services/invoiceService.js b/src/services/invoiceService.js
+index b0c1bbd..58fa560 100644
+--- a/src/services/invoiceService.js
++++ b/src/services/invoiceService.js
+@@ -8,7 +8,7 @@ import {
+ // ─── CREATE DRAFT ────────────────────────────────────────────────────────────
+ 
+ export async function createDraftInvoice({
+-  lead_id,
++  client_id,
+   line_items,
+   due_date,
+   notes,
+@@ -19,7 +19,7 @@ export async function createDraftInvoice({
+     .from("invoices")
+     .insert([
+       {
+-        lead_id,
++        client_id,
+         line_items, // jsonb — array de { description, amount }
+         total_amount,
+         due_date: due_date || null,
+@@ -30,13 +30,13 @@ export async function createDraftInvoice({
+         quickbooks_invoice_id: null,
+       },
+     ])
+-    .select("*, leads(full_name, email)")
++    .select("*, clients(first_name, last_name, email)")
+     .single();
+ 
+   if (error) throw new Error(`Error creando draft invoice: ${error.message}`);
+ 
+   console.log(
+-    `[Invoice] ✅ Draft creado. id: ${invoice.id} | lead: ${lead_id} | total: ${total_amount}`,
++    `[Invoice] ✅ Draft creado. id: ${invoice.id} | client: ${client_id} | total: ${total_amount}`,
+   );
+   return invoice;
+ }
+@@ -45,7 +45,7 @@ export async function createDraftInvoice({
+ 
+ export async function getDraftInvoices({
+   status,
+-  lead_id,
++  client_id,
+   search,
+   from,
+   to,
+@@ -58,7 +58,7 @@ export async function getDraftInvoices({
+   // Keeps count and data queries in sync — same filters, different selects.
+   function applyFilters(q) {
+     if (status) q = q.eq("status", status);
+-    if (lead_id) q = q.eq("lead_id", lead_id);
++    if (client_id) q = q.eq("client_id", client_id);
+     // Filter by issued_date (the date shown in the UI), not created_at.
+     // issued_date is a `date` column (no time component) so gte/lte on YYYY-MM-DD
+     // strings works correctly without any timezone adjustment.
+@@ -96,7 +96,7 @@ export async function getDraftInvoices({
+   const { data, error } = await applyFilters(
+     supabase
+       .from("invoices")
+-      .select("*, leads(full_name, email)")
++      .select("*, clients(first_name, last_name, email)")
+       .order("created_at", { ascending: false })
+       .range(offset, offset + limit - 1),
+   );
+@@ -113,7 +113,7 @@ export async function getDraftInvoices({
+ export async function getDraftInvoiceById(id) {
+   const { data, error } = await supabase
+     .from("invoices")
+-    .select("*, leads(full_name, email, phone)")
++    .select("*, clients(first_name, last_name, email, phone, default_address, street, city, state, zip_code, country)")
+     .eq("id", id)
+     .maybeSingle();
+ 
+@@ -186,17 +186,26 @@ export async function publishInvoiceToQB(id) {
+     );
+   }
+ 
+-  const lead = invoice.leads;
+-  if (!lead?.email) throw new Error("El lead vinculado no tiene email");
++  const client = invoice.clients;
++  if (!client?.email) throw new Error("El cliente vinculado no tiene email");
++  const fullName = [client.first_name, client.last_name]
++    .filter(Boolean)
++    .join(" ");
+ 
+   // 1. Buscar o crear el customer en QB
+   console.log(
+-    `[Invoice] 🔍 Buscando/creando customer en QB para: ${lead.email}`,
++    `[Invoice] 🔍 Buscando/creando customer en QB para: ${client.email}`,
+   );
+   const qbCustomer = await findOrCreateCustomer({
+-    email: lead.email,
+-    fullName: lead.full_name,
+-    phone: lead.phone,
++    email: client.email,
++    fullName,
++    phone: client.phone,
++    address: client.default_address,
++    street: client.street,
++    city: client.city,
++    state: client.state,
++    zip: client.zip_code,
++    country: client.country,
+   });
+ 
+   // 2. Crear la invoice en QB
+@@ -215,7 +224,7 @@ export async function publishInvoiceToQB(id) {
+     .update({
+       quickbooks_invoice_id: qbInvoice.Id,
+       quickbooks_customer_id: qbCustomer.Id,
+-      quickbooks_customer_name: qbCustomer.DisplayName || lead.full_name,
++      quickbooks_customer_name: qbCustomer.DisplayName || fullName,
+       doc_number: qbInvoice.DocNumber,
+       status: "published",
+       issued_date: qbInvoice.TxnDate,
+@@ -223,7 +232,7 @@ export async function publishInvoiceToQB(id) {
+       updated_at: new Date().toISOString(),
+     })
+     .eq("id", id)
+-    .select("*, leads(full_name, email)")
++    .select("*, clients(first_name, last_name, email)")
+     .single();
+ 
+   if (error)
+@@ -251,13 +260,13 @@ export async function sendInvoiceEmail(id) {
+     throw new Error("La invoice no tiene un QB id asignado");
+   }
+ 
+-  const lead = invoice.leads;
+-  if (!lead?.email) throw new Error("El lead no tiene email");
++  const client = invoice.clients;
++  if (!client?.email) throw new Error("El cliente no tiene email");
+ 
+   // Llamar al endpoint de envío de QB
+   const { baseUrl, headers } = await getRequestConfig();
+   const response = await fetch(
+-    `${baseUrl}/invoice/${invoice.quickbooks_invoice_id}/send?sendTo=${encodeURIComponent(lead.email)}`,
++    `${baseUrl}/invoice/${invoice.quickbooks_invoice_id}/send?sendTo=${encodeURIComponent(client.email)}`,
+     { method: "POST", headers },
+   );
+ 
+@@ -281,7 +290,7 @@ export async function sendInvoiceEmail(id) {
+     throw new Error(`Error actualizando status a sent: ${error.message}`);
+ 
+   console.log(
+-    `[Invoice] 📧 Email enviado al cliente ${lead.email}. QB id: ${invoice.quickbooks_invoice_id}`,
++    `[Invoice] 📧 Email enviado al cliente ${client.email}. QB id: ${invoice.quickbooks_invoice_id}`,
+   );
+-  return { success: true, sent_to: lead.email, invoice: updated };
++  return { success: true, sent_to: client.email, invoice: updated };
+ }
+diff --git a/src/services/quickbooksService.js b/src/services/quickbooksService.js
+index 4c09348..c26592e 100644
+--- a/src/services/quickbooksService.js
++++ b/src/services/quickbooksService.js
+@@ -319,6 +319,23 @@ export async function findCustomerByEmail(email) {
+   return data?.QueryResponse?.Customer?.[0] ?? null;
+ }
+ 
++// Arma BillAddr estructurada cuando tenemos street/city/state/zip/country;
++// fallback a Line1 con el string de dirección plano si es lo único disponible.
++// Compartida entre createCustomer y ensureCustomerTaxSetup.
++function buildBillAddr(leadData) {
++  if (leadData.street || leadData.city) {
++    return {
++      Line1: leadData.street || leadData.address || undefined,
++      City: leadData.city || undefined,
++      CountrySubDivisionCode: leadData.state || undefined,
++      PostalCode: leadData.zip || undefined,
++      Country: leadData.country || "CA",
++    };
++  }
++  if (leadData.address) return { Line1: leadData.address };
++  return undefined;
++}
++
+ export async function createCustomer(leadData) {
+   const { baseUrl, headers } = await getRequestConfig();
+   const parts = (leadData.fullName || "").trim().split(" ").filter(Boolean);
+@@ -326,6 +343,9 @@ export async function createCustomer(leadData) {
+   const lastName =
+     parts.length === 0 ? "Unknown" : parts.slice(1).join(" ") || parts[0];
+ 
++  // Necesaria para que Automated Sales Tax calcule la tasa correcta (HST BC vs otra).
++  const billAddr = buildBillAddr(leadData);
++
+   const payload = {
+     GivenName: firstName,
+     FamilyName: lastName,
+@@ -334,7 +354,8 @@ export async function createCustomer(leadData) {
+     PrimaryPhone: leadData.phone
+       ? { FreeFormNumber: leadData.phone }
+       : undefined,
+-    BillAddr: leadData.address ? { Line1: leadData.address } : undefined,
++    BillAddr: billAddr,
++    Taxable: true,
+   };
+ 
+   const response = await fetch(`${baseUrl}/customer`, {
+@@ -349,30 +370,99 @@ export async function createCustomer(leadData) {
+   return data.Customer;
+ }
+ 
++// Si el customer ya existe en QB pero le falta BillAddr o tiene Taxable: false,
++// lo actualiza (sparse update — solo manda los campos que cambian, no pisa el
++// resto). Ambos casos producen el mismo error de validación al facturar:
++// - Sin BillAddr: QB no puede resolver la tasa por ubicación.
++// - Taxable: false: QB ignora el TaxCodeRef de las líneas (customer marcado
++//   como no-gravable), aunque las líneas digan lo contrario.
++// Caso real que motivó esto: customer creado en un intento previo, antes de
++// que empezáramos a mandar dirección/Taxable (LAB, ago 2026).
++async function ensureCustomerTaxSetup(customer, leadData) {
++  const hasAddr = customer.BillAddr?.Line1 || customer.BillAddr?.City;
++  const needsTaxableFix = customer.Taxable === false;
++  if (hasAddr && !needsTaxableFix) return customer;
++
++  const patch = {
++    Id: customer.Id,
++    SyncToken: customer.SyncToken,
++    sparse: true,
++  };
++  if (!hasAddr) {
++    const billAddr = buildBillAddr(leadData);
++    if (billAddr) patch.BillAddr = billAddr;
++  }
++  if (needsTaxableFix) patch.Taxable = true;
++
++  // Nada que actualizar (ni dirección disponible ni Taxable que arreglar)
++  if (!patch.BillAddr && !("Taxable" in patch)) return customer;
++
++  const { baseUrl, headers } = await getRequestConfig();
++  const response = await fetch(`${baseUrl}/customer`, {
++    method: "POST",
++    headers,
++    body: JSON.stringify(patch),
++  });
++  const data = await response.json();
++  if (!data?.Customer) {
++    console.warn(
++      `[QB] No se pudo actualizar tax setup del customer ${customer.Id}:`,
++      JSON.stringify(data),
++    );
++    return customer;
++  }
++  console.log(`[QB] ✅ Tax setup sincronizado para customer ${customer.Id}`);
++  return data.Customer;
++}
++
+ export async function findOrCreateCustomer(leadData) {
+   const existing = await findCustomerByEmail(leadData.email);
+   if (existing) {
+     console.log("ℹ️ Customer ya existe en QB:", existing.Id);
+-    return existing;
++    return ensureCustomerTaxSetup(existing, leadData);
+   }
+   return createCustomer(leadData);
+ }
+ 
+ // ─── INVOICES ────────────────────────────────────────────────────────────────
+ 
+-export async function createInvoice(customer, lineItems, dueDate = null) {
++// taxCode: Id real de TaxCode en esta cuenta QB (no "TAX"/"NON" — esta cuenta
++// usa códigos manuales nombrados, no el esquema simplificado de AST). Default
++// "4" = GST (5%), confirmado contra una invoice histórica real (LAB, ago 2026).
++// BC no aplica PST a servicios de limpieza, por eso no es "8"/"9"/"10".
++export async function createInvoice(
++  customer,
++  lineItems,
++  dueDate = null,
++  taxCode = "4",
++) {
+   const { baseUrl, headers } = await getRequestConfig();
+   const lines = lineItems.map((item, i) => ({
+     Id: String(i + 1),
+     Amount: item.amount,
+     DetailType: "SalesItemLineDetail",
+     Description: item.description,
+-    SalesItemLineDetail: { UnitPrice: item.amount, Qty: 1 },
++    SalesItemLineDetail: {
++      UnitPrice: item.amount,
++      Qty: 1,
++      TaxCodeRef: { value: taxCode },
++    },
+   }));
+ 
+   const payload = {
+     CustomerRef: { value: customer.Id },
+     Line: lines,
++    // Requerido para compañías fuera de EE.UU. con sales tax (Canadá incluido).
++    // Sin esto, aunque las líneas tengan TaxCodeRef, QB nunca dispara el cálculo
++    // de Automated Sales Tax y responde "Make sure all your transactions have
++    // a GST/HST rate before you save" — mismo error que TaxCodeRef ausente.
++    GlobalTaxCalculation: "TaxExcluded",
++    // Sin BillEmail, /invoice/:id/send tira NullPointerException del lado de
++    // QB en vez de un error claro. No alcanza con que el customer tenga
++    // PrimaryEmailAddr — la invoice necesita su propio BillEmail (LAB, ago 2026).
++    ...(customer.PrimaryEmailAddr?.Address
++      ? { BillEmail: { Address: customer.PrimaryEmailAddr.Address } }
++      : {}),
+     ...(dueDate ? { DueDate: dueDate } : {}),
+   };
+ 
