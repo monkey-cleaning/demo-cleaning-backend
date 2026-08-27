@@ -560,8 +560,10 @@ export async function createCalendarEvent(req, res) {
     };
 
     let recurrenceRuleJson = null;
+    let normalizedRecurrence = null;
     if (recurrence) {
       recurrenceRuleJson = serializeRecurrence(recurrence);
+      normalizedRecurrence = deserializeRecurrence(recurrenceRuleJson);
     }
 
     const { data: masterRow, error: insertErr } = await supabase
@@ -593,7 +595,7 @@ export async function createCalendarEvent(req, res) {
     }
 
     if (recurrence) {
-      await materializeSeries(masterRow, recurrence, baseFields);
+      await materializeSeries(masterRow, normalizedRecurrence, baseFields);
     }
 
     console.log(`✅ Created appointment: ${masterRow.id} — "${summary}"`);
@@ -929,6 +931,7 @@ export async function updateCalendarEvent(req, res) {
         ? {
             is_series_master: true,
             recurrence_rule: serializeRecurrence(recurrence),
+            // normalizedRecurrence se calcula abajo, reusando este mismo json
           }
         : {}),
     };
@@ -947,7 +950,8 @@ export async function updateCalendarEvent(req, res) {
         .update({ series_id: updated.id })
         .eq("id", updated.id);
       updated.series_id = updated.id;
-      await materializeSeries(updated, recurrence, patch);
+      const normalizedRecurrence = deserializeRecurrence(patch.recurrence_rule);
+      await materializeSeries(updated, normalizedRecurrence, patch);
     }
 
     let cleanersChanged = false;
@@ -1082,9 +1086,23 @@ export async function getSeriesRecurrence(req, res) {
         .status(404)
         .json({ ok: false, error: "This event has no recurrence rule." });
     }
+    const raw = deserializeRecurrence(master.recurrence_rule) ?? {};
+    // El Frontend (SeriesRecurrenceInfo) espera freq con "BIWEEKLY" explícito
+    // y un endType derivado — no el shape crudo {freq,interval,count,until}
+    // que se guarda en la columna.
+    const freq =
+      raw.freq === "WEEKLY" && Number(raw.interval) === 2
+        ? "BIWEEKLY"
+        : raw.freq;
+    const endType = raw.until ? "until" : raw.count ? "count" : "never";
     return res.json({
       ok: true,
-      recurrence: deserializeRecurrence(master.recurrence_rule),
+      recurrence: {
+        freq,
+        endType,
+        count: raw.count ?? null,
+        until: raw.until ?? null,
+      },
     });
   } catch (e) {
     console.error("❌ getSeriesRecurrence:", e.message);

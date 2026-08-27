@@ -1,7 +1,7 @@
 {
-  "name": "landing-monkey-backend",
+  "name": "demo-cleaning-backend",
   "version": "1.0.0",
-  "description": "",
+  "description": "Standalone / white-label cleaning-services backend (fork of Monkey Cleaning, no Google Calendar).",
   "main": "index.js",
   "type": "module",
   "scripts": {
@@ -11,15 +11,15 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/monkey-cleaning/landing-monkey-backend.git"
+    "url": "git+https://github.com/monkey-cleaning/demo-cleaning-backend.git"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/monkey-cleaning/landing-monkey-backend/issues"
+    "url": "https://github.com/monkey-cleaning/demo-cleaning-backend/issues"
   },
-  "homepage": "https://github.com/monkey-cleaning/landing-monkey-backend#readme",
+  "homepage": "https://github.com/monkey-cleaning/demo-cleaning-backend#readme",
   "dependencies": {
     "@supabase/server": "^1.4.1",
     "@supabase/supabase-js": "^2.81.1",
