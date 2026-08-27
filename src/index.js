@@ -34,6 +34,7 @@ import {
 } from "./controllers/teamAssignmentController.js";
 import { requireAdmin } from "./middleware/requireAdmin.js";
 import { runFollowUpQuoteJob } from "./jobs/followUpQuoteJob.js";
+import { generateAvailability } from "./services/availabilityGeneratorService.js";
 import seoRoutes from "./routes/seoRoutes.js";
 import { startDailyDigestJob } from "./jobs/dailyDigestJob.js";
 import { startConfirmationPairingJob } from "./jobs/confirmationPairingJob.js";
@@ -144,3 +145,17 @@ startDailyDigestJob();
 cron.schedule("50 7 * * *", runFollowUpQuoteJob, {
   timezone: "America/Vancouver",
 });
+
+// 03:00 AM Vancouver — regenera cleaning_availability para los proximos 30
+// dias a partir de appointments. Cuando la disponibilidad venia de Google
+// Calendar esto lo hacia un Cron Job externo contra /api/jobs/availability/sync;
+// esa ruta sigue viva para dispararlo a mano, pero el fork no depende de ella.
+// Sin este cron la tabla se vacia sola: el horizonte avanza y nadie lo repone.
+cron.schedule(
+  "0 3 * * *",
+  () =>
+    generateAvailability({ rangeDays: 30 }).catch((err) =>
+      console.error("❌ [cron availability] Fallo la generacion:", err.message),
+    ),
+  { timezone: "America/Vancouver" },
+);

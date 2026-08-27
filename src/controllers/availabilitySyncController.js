@@ -1,10 +1,20 @@
-// LAB, ago 2026 — syncAvailabilityFromGoogle() se eliminó de
-// calendarAvailabilitySync.js en el fork standalone (Fase 2, tarea 2.9): la
-// disponibilidad ya sale de `appointments`/Supabase directo (vía
-// availabilityController.bookAvailability, 2.6), no hace falta sincronizar
-// desde Google Calendar. Esta ruta queda deprecada — devuelve 410 en vez de
-// crashear el import o desaparecer en silencio, por si queda algún caller
-// externo (Render Cron Job u otro scheduler) todavía apuntando acá.
+// POST /api/jobs/availability/sync
+//
+// Regenera `cleaning_availability` a partir de `appointments`. Requiere header
+// Authorization: Bearer <JOBS_TOKEN>.
+//
+// Historia: esta ruta llamaba a syncAvailabilityFromGoogle(), que se eliminó al
+// desacoplar de Google Calendar (Fase 2.9). Quedó como stub 410 y la tabla dejó
+// de poblarse — nada la reemplazaba, así que /available se quedó sin horarios.
+// Ahora ejecuta availabilityGeneratorService.generateAvailability(), que hace lo
+// mismo leyendo la ocupación de `appointments` en vez de la API de Calendar.
+//
+// Query params opcionales:
+//   ?rangeDays=30   horizonte en días (1-90, default 30)
+//   ?dryRun=1       calcula y reporta sin escribir
+
+import { generateAvailability } from "../services/availabilityGeneratorService.js";
+
 const JOB_TOKEN = process.env.JOBS_TOKEN;
 
 export async function syncAvailability(req, res) {
@@ -12,9 +22,19 @@ export async function syncAvailability(req, res) {
   const ok = JOB_TOKEN && auth.trim() === `Bearer ${JOB_TOKEN}`;
   if (!ok) return res.status(401).json({ error: "Unauthorized" });
 
-  return res.status(410).json({
-    ok: false,
-    error:
-      "Este endpoint fue removido: la disponibilidad ya no se sincroniza desde Google Calendar en esta instancia. Remover cualquier Cron Job externo que apunte acá.",
-  });
+  const parsedRange = parseInt(req.query.rangeDays, 10);
+  const rangeDays =
+    Number.isInteger(parsedRange) && parsedRange >= 1 && parsedRange <= 90
+      ? parsedRange
+      : 30;
+
+  const dryRun = req.query.dryRun === "1" || req.query.dryRun === "true";
+
+  try {
+    const result = await generateAvailability({ rangeDays, dryRun });
+    return res.json(result);
+  } catch (err) {
+    console.error("❌ [availability/sync] Falló la generación:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
 }
