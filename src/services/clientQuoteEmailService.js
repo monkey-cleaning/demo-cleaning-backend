@@ -3,6 +3,22 @@ import { DateTime } from "luxon";
 
 const BOOKING_TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
 
+// Dominio publico del frontend. Se usa para armar el link de reserva que va
+// en el email de cotizacion; sin esto el link apuntaba al sitio de Monkey.
+const FRONTEND_URL = (
+  process.env.FRONTEND_URL || "https://demo-cleaning-frontend.onrender.com"
+).replace(/\/+$/, "");
+
+const BOOKING_PATH = `${FRONTEND_URL}/available`;
+
+// Marca. Parametrizado por env en vez de hardcodeado: el producto es
+// white-label, y re-brandearlo no deberia requerir tocar el codigo de los
+// templates. CLIENT_FROM_NAME ya existia y lo usaba sendClientEmail() para el
+// From:, asi que la firma del cuerpo reusa el mismo valor en vez de inventar
+// una segunda fuente de verdad que pueda quedar desincronizada.
+const BRAND_NAME = process.env.BRAND_NAME || "Demo Cleaning Co.";
+const SIGNATURE_NAME = process.env.CLIENT_FROM_NAME || "Customer Care";
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -85,11 +101,11 @@ export function buildResidentialQuoteEmail({ lead, calc, slots = [], leadId = nu
   const totalHrs    = calc.totalHrs;
   const totalAmount = formatMoney(calc.totalAmount);
 
-  const subject = "Here: Your Quote with Monkey Cleaning 🐵✨";
+  const subject = `Your Quote with ${BRAND_NAME}`;
 
   // Build the booking URL — include leadId so the frontend (and GET
   // /api/availability?leadId=X) can filter windows to the right duration.
-  const baseBookingUrl = "https://monkeycleaning.com/available";
+  const baseBookingUrl = BOOKING_PATH;
   const bookingUrl     = leadId
     ? `${baseBookingUrl}?leadId=${encodeURIComponent(leadId)}`
     : baseBookingUrl;
@@ -119,7 +135,7 @@ export function buildResidentialQuoteEmail({ lead, calc, slots = [], leadId = nu
     <div style="font-family: Arial, sans-serif; line-height:1.6; color:#111;">
       <p>Hello ${escapeHtml(name)},</p>
 
-      <p>Thank you so much for reaching out to Monkey Cleaning 🐒✨ We'd be happy to assist you during your move and help ensure your home is left in excellent condition.</p>
+      <p>Thank you so much for reaching out to ${escapeHtml(BRAND_NAME)} ✨ We'd be happy to assist you during your move and help ensure your home is left in excellent condition.</p>
 
       <p>For your situation, we recommend a move-out cleaning service, which is more detailed than a standard or deep cleaning, as it is designed to prepare the home for the next occupant or final inspection.</p>
 
@@ -139,7 +155,7 @@ export function buildResidentialQuoteEmail({ lead, calc, slots = [], leadId = nu
       Based on the information provided, we estimate this service will require approximately <b>${formatHours(totalHrs)}</b> labor hours. Our team may consist of two professionals working simultaneously to complete the job efficiently.</p>
 
       <p><b>💲 Pricing</b><br/>
-      Our service rate is $45 per labor hour + applicable taxes.<br/>
+      Our service rate is ${formatMoney(calc.hourlyRate)} per labor hour + applicable taxes.<br/>
       Based on this estimate, the total cost would be approximately <b>${totalAmount} + tax</b>.</p>
 
       <p>As a note of transparency and honesty, we only charge for the actual time our team spends at the property. If the service takes less time than estimated, only the time worked will be charged.</p>
@@ -154,8 +170,8 @@ export function buildResidentialQuoteEmail({ lead, calc, slots = [], leadId = nu
       <p>If you have any questions or would like to proceed, please don't hesitate to reach out.</p>
 
       <p>Warm regards,<br/>
-      Claire<br/>
-      Monkey Cleaning Team 🐒</p>
+      ${escapeHtml(SIGNATURE_NAME)}<br/>
+      ${escapeHtml(BRAND_NAME)}</p>
     </div>`;
 
     return { subject, html };
@@ -166,7 +182,7 @@ export function buildResidentialQuoteEmail({ lead, calc, slots = [], leadId = nu
   <div style="font-family: Arial, sans-serif; line-height:1.6; color:#111;">
     <p>Hello ${escapeHtml(name)},</p>
 
-    <p>Thank you so much for reaching out to Monkey Cleaning 🐒✨ We'd be delighted to assist you and help create a cleaning plan that feels just right for your home.</p>
+    <p>Thank you so much for reaching out to ${escapeHtml(BRAND_NAME)} ✨ We'd be delighted to assist you and help create a cleaning plan that feels just right for your home.</p>
 
     <p>For your first visit, we recommend starting with an initial deep cleaning service. This allows us to bring your home to an excellent baseline, making future maintenance cleanings more efficient and consistent.</p>
 
@@ -185,7 +201,7 @@ export function buildResidentialQuoteEmail({ lead, calc, slots = [], leadId = nu
     This may be completed by a team of two professionals working simultaneously, meaning less time spent in your home.</p>
 
     <p><b>💲 Pricing</b><br/>
-    Our service rate is $45 per labor hour + applicable taxes.<br/>
+    Our service rate is ${formatMoney(calc.hourlyRate)} per labor hour + applicable taxes.<br/>
     Based on this estimate, the total cost for your initial deep cleaning would be approximately <b>${totalAmount} + tax</b>.</p>
 
     <p>As a note of transparency and honesty, we only charge for the actual time our team spends at the property. If the service takes less time than estimated, only the time worked will be charged.</p>
@@ -200,22 +216,22 @@ export function buildResidentialQuoteEmail({ lead, calc, slots = [], leadId = nu
     <p>If you have any questions or would like to move forward, please don't hesitate to reach out.</p>
 
     <p>Warm regards,<br/>
-    Claire<br/>
-    Monkey Cleaning Team 🐒</p>
+    ${escapeHtml(SIGNATURE_NAME)}<br/>
+    ${escapeHtml(BRAND_NAME)}</p>
   </div>`;
   return { subject, html };
 }
 
 export function buildCustomerConfirmationEmail({ fullName }) {
   const name = fullName || "there";
-  const subject = "Thank you for reaching out to Monkey Cleaning!";
+  const subject = `Thank you for reaching out to ${BRAND_NAME}!`;
   const html = [
     '<div style="font-family: Arial, sans-serif; line-height:1.5; color:#111;">',
-    `<p>Hello ${name},</p>`,
-    "<p>Thank you for reaching out to Monkey Cleaning!</p>",
+    `<p>Hello ${escapeHtml(name)},</p>`,
+    `<p>Thank you for reaching out to ${escapeHtml(BRAND_NAME)}!</p>`,
     "<p>We have received your request and a member of our team will be in touch with you shortly with all the details.</p>",
     "<p>We look forward to helping you!</p>",
-    "<p>Warm regards,<br/>Claire<br/>Monkey Cleaning Team</p>",
+    `<p>Warm regards,<br/>${escapeHtml(SIGNATURE_NAME)}<br/>${escapeHtml(BRAND_NAME)}</p>`,
     "</div>",
   ].join("\n");
 
@@ -228,21 +244,21 @@ export function buildCustomerConfirmationEmail({ fullName }) {
 
 export function buildCommercialInquiryEmail({ lead }) {
   const name    = lead.fullName || "there";
-  const subject = `Received: Monkey Cleaning Inquiry for ${lead.fullName || lead.email || "Client"}`;
+  const subject = `Received: ${BRAND_NAME} Inquiry for ${lead.fullName || lead.email || "Client"}`;
 
   const html = `
   <div style="font-family: Arial, sans-serif; line-height:1.6; color:#111;">
     <p>Dear ${escapeHtml(name)},</p>
 
-    <p>Thank you for contacting Monkey Cleaning!</p>
+    <p>Thank you for contacting ${escapeHtml(BRAND_NAME)}!</p>
 
     <p>We have received your inquiry regarding cleaning services for your space.</p>
 
     <p>One of our team members will review your details and contact you shortly.</p>
 
     <p>Warm regards,<br/>
-    Claire<br/>
-    Monkey Cleaning Team</p>
+    ${escapeHtml(SIGNATURE_NAME)}<br/>
+    ${escapeHtml(BRAND_NAME)}</p>
   </div>`;
 
   return { subject, html };
@@ -255,11 +271,11 @@ export function buildCommercialInquiryEmail({ lead }) {
 export async function sendClientEmail({ to, subject, html }) {
   const transporter = createClientMailer();
 
-  const fromName  = process.env.CLIENT_FROM_NAME || "Claire";
+  const fromName  = SIGNATURE_NAME;
   const fromEmail = process.env.SMTP_USER;
 
   await transporter.sendMail({
-    from:    `"${fromName} - Monkey Cleaning" <${fromEmail}>`,
+    from:    `"${fromName} - ${BRAND_NAME}" <${fromEmail}>`,
     to,
     subject,
     html,
@@ -269,9 +285,9 @@ export async function sendClientEmail({ to, subject, html }) {
 export function buildFollowUpEmail({ lead, leadId = null }) {
   const name = lead.full_name || lead.fullName || "there";
 
-  const subject = "Just checking in! 🐒✨";
+  const subject = "Just checking in! ✨";
 
-  const baseBookingUrl = "https://monkeycleaning.com/available";
+  const baseBookingUrl = BOOKING_PATH;
   const bookingUrl     = leadId
     ? `${baseBookingUrl}?leadId=${encodeURIComponent(leadId)}`
     : baseBookingUrl;
@@ -286,7 +302,7 @@ export function buildFollowUpEmail({ lead, leadId = null }) {
     shine ✨ Picture this: you walk through the door, everything is fresh, spotless,
     and gleaming… and you didn't lift a finger 😌</p>
 
-    <p>That's exactly what we do best at Monkey Cleaning 🐒💚 — the kind of clean
+    <p>That's exactly what we do best at ${escapeHtml(BRAND_NAME)} 💚 — the kind of clean
     you can see, smell, and relax into.</p>
 
     <p>Whenever you're ready, we've made it super easy:</p>
@@ -299,7 +315,7 @@ export function buildFollowUpEmail({ lead, leadId = null }) {
       <a href="${bookingUrl}"
          style="display:inline-block;padding:12px 24px;background:#667eea;color:#fff;
                 border-radius:6px;text-decoration:none;font-weight:600;font-size:15px;">
-        Book My Cleaning 🐒
+        Book My Cleaning
       </a>
     </p>
 
@@ -307,7 +323,7 @@ export function buildFollowUpEmail({ lead, leadId = null }) {
 
     <p style="margin-top:28px;">
       Kind regards,<br/>
-      Claire
+      ${escapeHtml(SIGNATURE_NAME)}
     </p>
   </div>`;
 
