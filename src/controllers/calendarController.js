@@ -673,7 +673,7 @@ export async function updateCalendarEvent(req, res) {
       colorId === undefined ? existing.color_id : colorId || null;
     const teamIdFromColor = teamIdFromColorId(resolvedColorId);
 
-    // ── scope="following": split de la serie ──────────────────────────────
+    // ── scope="following" ────────────────────────────────────────────────
     if (scope === "following") {
       if (!startIso) {
         return res.status(400).json({
@@ -693,34 +693,77 @@ export async function updateCalendarEvent(req, res) {
           .json({ ok: false, error: "Series master not found" });
       }
 
-      const isFirstOccurrence = existing.id === masterRow.id;
-
-      // Truncar/cancelar la serie vieja desde esta fecha en adelante
-      // (excluyendo esta fila, que pasa a ser el arranque de la nueva serie).
-      const splitDate = existing.scheduled_date;
-      await supabase
-        .from("appointments")
-        .update({ status: "cancelled", updated_at: new Date().toISOString() })
-        .eq("series_id", masterId)
-        .gte("scheduled_date", splitDate)
-        .neq("id", existing.id);
-
       const oldRecurrence = deserializeRecurrence(masterRow.recurrence_rule);
       if (!oldRecurrence) {
-        return res
-          .status(400)
-          .json({
-            ok: false,
-            error: "Could not read the series' recurrence rule.",
-          });
+        return res.status(400).json({
+          ok: false,
+          error: "Could not read the series' recurrence rule.",
+        });
       }
       const { freq, interval } = extractFreqInterval(oldRecurrence);
-      const newRecurrence = {
-        freq,
-        interval,
-        count: null,
-        until: oldRecurrence.until,
-      };
+
+      // ¿El corte cae en (o antes de) la primera ocurrencia? Entonces "esta y
+      // las siguientes" == toda la serie: se reescribe el MAESTRO EN SU LUGAR
+      // y se re-materializan las instancias. NO se crea una segunda serie —
+      // hacer eso dejaba el maestro viejo vivo y duplicaba el turno.
+      const isFirstOccurrence =
+        existing.scheduled_date <= masterRow.scheduled_date;
+
+      // Recurrencia de la serie resultante:
+      //  - primera ocurrencia → sin cambios (es toda la serie).
+      //  - split real → mismo freq/interval; el count (si lo había) se reduce
+      //    por las ocurrencias que quedan del lado viejo.
+      let newRecurrence;
+      if (isFirstOccurrence) {
+        newRecurrence = {
+          freq,
+          interval,
+          count: oldRecurrence.count ?? null,
+          until: oldRecurrence.until ?? null,
+        };
+      } else {
+        let remainingCount = null;
+        let beforeCount = null;
+        if (oldRecurrence.count != null) {
+          const allDates = expandRecurrenceDates(
+            oldRecurrence,
+            masterRow.starts_at,
+          );
+          beforeCount = allDates.filter(
+            (d) =>
+              DateTime.fromJSDate(d).setZone(TZ).toISODate() <
+              existing.scheduled_date,
+          ).length;
+          remainingCount = Math.max(1, oldRecurrence.count - beforeCount);
+        }
+        newRecurrence = {
+          freq,
+          interval,
+          count: remainingCount,
+          until: oldRecurrence.until ?? null,
+        };
+
+        // Truncar la recurrencia del maestro VIEJO para que no siga
+        // "prometiendo" ocurrencias que ahora viven en la serie nueva.
+        const truncatedOld =
+          beforeCount != null
+            ? { freq, interval, count: beforeCount, until: null }
+            : {
+                freq,
+                interval,
+                count: null,
+                until: DateTime.fromISO(existing.scheduled_date, { zone: TZ })
+                  .minus({ days: 1 })
+                  .toISODate(),
+              };
+        await supabase
+          .from("appointments")
+          .update({
+            recurrence_rule: serializeRecurrence(truncatedOld),
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", masterId);
+      }
 
       const newStartDt = DateTime.fromISO(startIso, { zone: TZ });
       const durationMin = endIso
@@ -747,6 +790,57 @@ export async function updateCalendarEvent(req, res) {
         ...(value && { value }),
       };
 
+      if (isFirstOccurrence) {
+        const { data: updatedMaster, error: updErr } = await supabase
+          .from("appointments")
+          .update({
+            ...baseFields,
+            starts_at: newStartDt.toISO(),
+            ends_at: newEndDt.toISO(),
+            scheduled_date: newStartDt.toISODate(),
+            scheduled_start_time: newStartDt.toFormat("HH:mm:ss"),
+            scheduled_end_time: newEndDt.toFormat("HH:mm:ss"),
+            is_series_master: true,
+            recurrence_rule: serializeRecurrence(newRecurrence),
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", masterId)
+          .select()
+          .single();
+        if (updErr) throw updErr;
+
+        // Cancelar las instancias materializadas viejas (todas menos el maestro)
+        // y regenerarlas desde el nuevo DTSTART / recurrencia.
+        await supabase
+          .from("appointments")
+          .update({ status: "cancelled", updated_at: new Date().toISOString() })
+          .eq("series_id", masterId)
+          .neq("id", masterId);
+
+        if (employeeIds !== undefined) {
+          await syncAppointmentTeams(masterId, employeeIds);
+          await syncDailyTeamAssignments(
+            updatedMaster,
+            teamIdFromColor,
+            employeeIds,
+          );
+        }
+
+        await materializeSeries(updatedMaster, newRecurrence, baseFields);
+
+        return res.status(200).json({ ok: true, event: mapRow(updatedMaster) });
+      }
+
+      // ── Split real: parte la serie en `existing` ──────────────────────────
+      // `existing` pasa a ser el arranque de una serie NUEVA; la vieja se
+      // trunca cancelando todo lo que cae en o después de esta fecha.
+      const splitDate = existing.scheduled_date;
+      await supabase
+        .from("appointments")
+        .update({ status: "cancelled", updated_at: new Date().toISOString() })
+        .eq("series_id", masterId)
+        .gte("scheduled_date", splitDate);
+
       const { data: newMaster, error: newMasterErr } = await supabase
         .from("appointments")
         .insert({
@@ -769,15 +863,6 @@ export async function updateCalendarEvent(req, res) {
         .update({ series_id: newMaster.id })
         .eq("id", newMaster.id);
       newMaster.series_id = newMaster.id;
-
-      // La fila "existing" (la ocurrencia que se estaba editando) queda
-      // reemplazada por newMaster — se cancela para no duplicar el día.
-      if (!isFirstOccurrence) {
-        await supabase
-          .from("appointments")
-          .update({ status: "cancelled", updated_at: new Date().toISOString() })
-          .eq("id", existing.id);
-      }
 
       if (employeeIds !== undefined) {
         await syncAppointmentTeams(newMaster.id, employeeIds);
