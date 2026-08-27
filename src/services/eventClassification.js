@@ -135,3 +135,31 @@ export function detectTeamByColor(e, TEAMS_CONFIG) {
 export function getTeamColorId(teamId, TEAMS_CONFIG) {
   return TEAMS_CONFIG?.[teamId]?.colorIds?.[0] ?? null;
 }
+
+// ── Variantes "Row" — MVP Standalone (sin Google Calendar) ─────────────────
+// Mismo criterio de clasificación por color, pero leyendo de una fila de
+// appointments (row.color_id) en vez de un evento de GCal (e.colorId). Se
+// agregan como wrappers nuevos, sin tocar las funciones de arriba, por si
+// algún otro archivo del sistema original (ej. calendarAvailabilitySync.js)
+// sigue usando el shape viejo y no fue tocado en este ticket.
+export function isNonServiceEventRow(row) {
+  return String(row?.color_id ?? "") === NON_SERVICE_COLOR_ID;
+}
+
+export function isPendingConfirmationRow(row) {
+  return String(row?.color_id ?? "") === CONFIRMAR_COLOR_ID;
+}
+
+export function isIndividualAssignmentRow(row) {
+  return String(row?.color_id ?? "") === INDIVIDUAL_COLOR_ID;
+}
+
+export function detectTeamByColorRow(row, TEAMS_CONFIG) {
+  return detectTeamByColor({ colorId: row?.color_id }, TEAMS_CONFIG);
+}
+
+// isLunchEvent ya recibe un summary (string), no un evento — incluida acá
+// como alias para que calendarController.js pueda importar un nombre
+// explícito ("Summary") sin ambigüedad respecto a las variantes "Row" de
+// arriba, que sí reciben la fila completa.
+export const isLunchEventSummary = isLunchEvent;

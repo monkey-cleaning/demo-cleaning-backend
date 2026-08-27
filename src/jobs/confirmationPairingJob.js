@@ -2,148 +2,120 @@
 //
 // Ticket: "Confirmación automática de servicios pendientes (CONFIRMAR)"
 //
+// Post-standalone: ya no hay GCal, así que la señal "CONFIRMAR" en el
+// título de un evento (que ops agregaba a mano en Google Calendar) deja de
+// existir. En su lugar, se usa lo que ya es nativo de Supabase:
+// appointments.status = 'pending' ES esa misma señal — un turno recién
+// creado que todavía no pasó por confirmSlot() (que lo marca 'confirmed').
+//
+// ⚠️ Decisión asumida (avisar si no es la correcta): con esto, TODO
+// appointment en 'pending' es candidato al flujo de confirmación — no solo
+// los que ops flageaba a mano en GCal. Si el MVP necesita que solo algunos
+// turnos disparen este flujo, hace falta un flag explícito en `appointments`
+// (y un control en el admin panel para setearlo) — no está en el alcance de
+// este archivo.
+//
 // Cada ~15 min:
-//   1. Busca en GCal eventos con "CONFIRMAR" en el título que todavía no
-//      tienen fila en confirmation_slots.
-//   2. Resuelve su client_id leyendo `appointments` (NO reimplementa el
-//      matcher de 4 niveles de appointmentSyncService.js — ese job ya corre
-//      sobre estos mismos eventos porque "confirmar" no está en
-//      SKIP_KEYWORDS, así que appointments.client_id ya viene resuelto).
-//      Si un evento todavía no fue sincronizado, se salta y se reintenta
-//      en la próxima pasada — no se marca como error.
-//   3. Agrupa por client_id: dos eventos creados dentro de la ventana de
-//      gracia (setting confirmation_pairing_grace_minutes) → mismo group_id
-//      (caso "2 horarios ofrecidos"). Un evento solo, una vez pasada la
-//      ventana de gracia sin aparecer un segundo → group_id propio (caso
-//      "confirmar sí/no").
-//   4. Inserta las filas en confirmation_slots con token único por slot.
+//   1. Busca en `appointments` los que están 'pending' y todavía no tienen
+//      fila en confirmation_slots (sin necesidad de resolver nada — el
+//      client_id ya viene directo de la fila, appointments.client_id es
+//      NOT NULL).
+//   2. Agrupa por client_id: dos appointments creados dentro de la ventana
+//      de gracia (setting confirmation_pairing_grace_minutes) → mismo
+//      group_id (caso "2 horarios ofrecidos"). Un appointment solo, una vez
+//      pasada la ventana de gracia sin aparecer un segundo → group_id
+//      propio (caso "confirmar sí/no").
+//   3. Inserta las filas en confirmation_slots con token único por slot,
+//      con starts_at calculado desde scheduled_date + scheduled_start_time.
 //
 // NOTA sobre paths: este archivo asume que jobs/ es hermano de controllers/
 // y services/ (mismo nivel que dailyDigestJob.js). Si tu estructura real es
-// distinta, son los únicos 3 imports a ajustar.
+// distinta, son los únicos imports a ajustar.
 
 import cron from "node-cron";
 import crypto from "crypto";
 import { DateTime } from "luxon";
-import { getCalendarClient } from "../services/googleCalendarClient.js";
 import { supabase } from "../supabaseClient.js";
 import { getRawSettings } from "../services/settingsService.js";
-import {
-  isPendingConfirmation,
-  CALENDAR_ID,
-} from "../controllers/calendarController.js";
 
 const TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
 
-// Cuánto adelante mirar en GCal. 60 días alcanza y sobra: estos eventos se
-// resuelven en días (recordatorio a 2 días, release a 24h), no meses.
+// Cuánto adelante mirar. 60 días alcanza y sobra: estos casos se resuelven
+// en días (recordatorio a 2 días, release a 24h), no meses.
 const LOOKAHEAD_DAYS = 60;
 
-// ── 1. Trae de GCal los eventos "CONFIRMAR" que todavía no tienen slot ──────
-async function findUnpairedConfirmarEvents() {
-  const calendar = getCalendarClient();
-  const now = DateTime.now().setZone(TZ);
-  const timeMin = now.toISO();
-  const timeMax = now.plus({ days: LOOKAHEAD_DAYS }).toISO();
+// ── 1. Trae appointments 'pending' que todavía no tienen slot ──────────────
+async function findUnpairedPendingAppointments() {
+  const today = DateTime.now().setZone(TZ).toISODate();
+  const maxDate = DateTime.now()
+    .setZone(TZ)
+    .plus({ days: LOOKAHEAD_DAYS })
+    .toISODate();
 
-  let events = [];
-  let pageToken;
-  do {
-    const resp = await calendar.events.list({
-      calendarId: CALENDAR_ID,
-      timeMin,
-      timeMax,
-      singleEvents: true,
-      orderBy: "startTime",
-      maxResults: 250,
-      pageToken,
-      timeZone: TZ,
-      fields:
-        "items(id,summary,colorId,start,end,created,status),nextPageToken",
-    });
-    events = events.concat(resp.data.items || []);
-    pageToken = resp.data.nextPageToken;
-  } while (pageToken);
-
-  const candidates = events.filter(
-    (e) => e.status !== "cancelled" && isPendingConfirmation(e),
-  );
-  if (!candidates.length) return [];
-
-  const gcalIds = candidates.map((e) => e.id);
-  const { data: existingSlots, error } = await supabase
-    .from("confirmation_slots")
-    .select("google_calendar_event_id")
-    .in("google_calendar_event_id", gcalIds);
+  const { data: pending, error } = await supabase
+    .from("appointments")
+    .select("id, client_id, created_at, scheduled_date, scheduled_start_time")
+    .eq("status", "pending")
+    .gte("scheduled_date", today)
+    .lte("scheduled_date", maxDate);
 
   if (error) {
     console.error(
-      "❌ [ConfirmationPairing] Error leyendo confirmation_slots existentes:",
+      "❌ [ConfirmationPairing] Error leyendo appointments pending:",
       error.message,
     );
     return [];
   }
 
-  const already = new Set(
-    (existingSlots ?? []).map((s) => s.google_calendar_event_id),
-  );
-  return candidates.filter((e) => !already.has(e.id));
-}
+  const candidates = pending ?? [];
+  if (!candidates.length) return [];
 
-// ── 2. Resuelve client_id + appointment_id desde appointments ya sincronizado ─
-async function resolveFromAppointments(gcalIds) {
-  const map = new Map(); // gcalEventId → { clientId, appointmentId }
-  if (!gcalIds.length) return map;
+  const apptIds = candidates.map((a) => a.id);
+  const { data: existingSlots, error: slotsErr } = await supabase
+    .from("confirmation_slots")
+    .select("appointment_id")
+    .in("appointment_id", apptIds);
 
-  const { data, error } = await supabase
-    .from("appointments")
-    .select("google_calendar_event_id, client_id, id")
-    .in("google_calendar_event_id", gcalIds);
-
-  if (error) {
+  if (slotsErr) {
     console.error(
-      "❌ [ConfirmationPairing] Error leyendo appointments:",
-      error.message,
+      "❌ [ConfirmationPairing] Error leyendo confirmation_slots existentes:",
+      slotsErr.message,
     );
-    return map;
+    return [];
   }
 
-  for (const row of data ?? []) {
-    if (row.client_id) {
-      map.set(row.google_calendar_event_id, {
-        clientId: row.client_id,
-        appointmentId: row.id,
-      });
-    }
-  }
-  return map;
+  const already = new Set(
+    (existingSlots ?? []).map((s) => s.appointment_id),
+  );
+  return candidates.filter((a) => !already.has(a.id));
 }
 
-// ── 3. Agrupa por client_id, empareja por cercanía de creación ──────────────
-// Algoritmo greedy: dentro de cada cliente, mientras queden ≥2 eventos sin
-// agrupar, toma los dos más próximos en el tiempo. Si la distancia entre sus
-// timestamps `created` está dentro de la ventana de gracia → van juntos. Si
-// no, el primero (el más viejo) se resuelve como grupo de 1 SIEMPRE QUE ya
-// haya pasado la ventana de gracia desde que se creó (si todavía no pasó,
-// se deja para la próxima corrida, por si su par aparece).
-function buildGroups(eventsByClient, graceMinutes, nowMs) {
-  const groups = []; // [{ clientId, events: [gcalEvent, ...] }]
+// ── 2. Agrupa por client_id, empareja por cercanía de creación ─────────────
+// Algoritmo greedy: dentro de cada cliente, mientras queden ≥2 appointments
+// sin agrupar, toma los dos más próximos en el tiempo (created_at). Si la
+// distancia entre sus timestamps está dentro de la ventana de gracia → van
+// juntos. Si no, el primero (el más viejo) se resuelve como grupo de 1
+// SIEMPRE QUE ya haya pasado la ventana de gracia desde que se creó (si
+// todavía no pasó, se deja para la próxima corrida, por si su par aparece).
+function buildGroups(apptsByClient, graceMinutes, nowMs) {
+  const groups = []; // [{ clientId, appts: [appointment, ...] }]
 
-  for (const [clientId, evts] of eventsByClient) {
-    const pending = [...evts].sort(
-      (a, b) => new Date(a.created) - new Date(b.created),
+  for (const [clientId, appts] of apptsByClient) {
+    const pending = [...appts].sort(
+      (a, b) => new Date(a.created_at) - new Date(b.created_at),
     );
 
     while (pending.length > 0) {
       if (pending.length === 1) {
         const only = pending[0];
-        const ageMinutes = (nowMs - new Date(only.created).getTime()) / 60000;
+        const ageMinutes =
+          (nowMs - new Date(only.created_at).getTime()) / 60000;
         if (ageMinutes >= graceMinutes) {
-          groups.push({ clientId, events: [only] });
+          groups.push({ clientId, appts: [only] });
           pending.shift();
         } else {
-          // Todavía puede aparecer un segundo evento — se deja para la
-          // próxima pasada del job sin tocarlo.
+          // Todavía puede aparecer un segundo — se deja para la próxima
+          // pasada del job sin tocarlo.
           pending.shift();
         }
         continue;
@@ -151,18 +123,21 @@ function buildGroups(eventsByClient, graceMinutes, nowMs) {
 
       const [first, second] = pending;
       const gapMinutes =
-        Math.abs(new Date(second.created) - new Date(first.created)) / 60000;
+        Math.abs(new Date(second.created_at) - new Date(first.created_at)) /
+        60000;
 
       if (gapMinutes <= graceMinutes) {
-        groups.push({ clientId, events: [first, second] });
+        groups.push({ clientId, appts: [first, second] });
         pending.splice(0, 2);
       } else {
-        // El segundo está demasiado lejos en el tiempo del primero como para
-        // ser su par — el primero se resuelve solo (si ya pasó su propia
-        // ventana de gracia; si no, se lo deja para la próxima corrida).
-        const ageMinutes = (nowMs - new Date(first.created).getTime()) / 60000;
+        // El segundo está demasiado lejos en el tiempo del primero como
+        // para ser su par — el primero se resuelve solo (si ya pasó su
+        // propia ventana de gracia; si no, se lo deja para la próxima
+        // corrida).
+        const ageMinutes =
+          (nowMs - new Date(first.created_at).getTime()) / 60000;
         if (ageMinutes >= graceMinutes) {
-          groups.push({ clientId, events: [first] });
+          groups.push({ clientId, appts: [first] });
         }
         pending.shift();
       }
@@ -172,23 +147,25 @@ function buildGroups(eventsByClient, graceMinutes, nowMs) {
   return groups;
 }
 
-// ── 4. Inserta confirmation_slots para cada grupo resuelto ──────────────────
-async function insertGroups(groups, resolvedMap) {
+// ── 3. Inserta confirmation_slots para cada grupo resuelto ──────────────────
+function computeStartsAt(appt) {
+  return DateTime.fromISO(
+    `${appt.scheduled_date}T${appt.scheduled_start_time}`,
+    { zone: TZ },
+  ).toISO();
+}
+
+async function insertGroups(groups) {
   const rows = [];
 
-  for (const { events } of groups) {
+  for (const { clientId, appts } of groups) {
     const groupId = crypto.randomUUID();
-    for (const e of events) {
-      const resolved = resolvedMap.get(e.id);
-      if (!resolved) continue; // no debería pasar (ya se filtró antes), defensivo
-
-      const startIso = e.start?.dateTime || e.start?.date;
+    for (const appt of appts) {
       rows.push({
         group_id: groupId,
-        google_calendar_event_id: e.id,
-        appointment_id: resolved.appointmentId,
-        client_id: resolved.clientId,
-        starts_at: DateTime.fromISO(startIso, { zone: TZ }).toISO(),
+        appointment_id: appt.id,
+        client_id: clientId,
+        starts_at: computeStartsAt(appt),
         token: crypto.randomBytes(24).toString("hex"),
         status: "offered",
       });
@@ -207,12 +184,9 @@ async function insertGroups(groups, resolvedMap) {
 
 // ── Runner principal (exportado para poder correrlo a mano al testear) ──────
 // `testClientId` es opcional — solo para verificación end-to-end manual: si
-// se pasa, el job igual busca "CONFIRMAR" en TODO el calendario (no hay
-// forma barata de filtrar eso antes), pero solo arma grupos/inserta slots
-// para ese client_id puntual, dejando cualquier otro evento CONFIRMAR real
-// intacto (ni se toca, ni se lee dos veces, simplemente no se procesa en
-// esta corrida). El cron de producción (startConfirmationPairingJob) llama
-// a esto sin argumentos, así que su comportamiento no cambia.
+// se pasa, solo arma grupos/inserta slots para ese client_id puntual,
+// dejando cualquier otro appointment pending intacto. El cron de
+// producción (startConfirmationPairingJob) llama a esto sin argumentos.
 export async function runConfirmationPairingJob({ testClientId } = {}) {
   try {
     const settings = await getRawSettings();
@@ -221,47 +195,31 @@ export async function runConfirmationPairingJob({ testClientId } = {}) {
       10,
     );
 
-    const unpaired = await findUnpairedConfirmarEvents();
+    let unpaired = await findUnpairedPendingAppointments();
     if (!unpaired.length) {
       console.log("[ConfirmationPairing] Nada nuevo para emparejar.");
       return { groups: 0, slots: 0 };
     }
 
-    const gcalIds = unpaired.map((e) => e.id);
-    const resolvedMap = await resolveFromAppointments(gcalIds);
-
-    // Solo eventos que YA tienen client_id resuelto en appointments —
-    // el resto se reintenta en la próxima corrida.
-    let resolvable = unpaired.filter((e) => resolvedMap.has(e.id));
-    const skipped = unpaired.length - resolvable.length;
-    if (skipped > 0) {
-      console.log(
-        `[ConfirmationPairing] ${skipped} evento(s) CONFIRMAR sin client_id resuelto todavía — se reintentan en la próxima corrida.`,
-      );
-    }
-
     if (testClientId) {
-      const before = resolvable.length;
-      resolvable = resolvable.filter(
-        (e) => resolvedMap.get(e.id).clientId === testClientId,
-      );
+      const before = unpaired.length;
+      unpaired = unpaired.filter((a) => a.client_id === testClientId);
       console.log(
-        `[ConfirmationPairing] testClientId=${testClientId} — ${resolvable.length}/${before} evento(s) en scope para esta corrida.`,
+        `[ConfirmationPairing] testClientId=${testClientId} — ${unpaired.length}/${before} appointment(s) en scope para esta corrida.`,
       );
     }
 
-    if (!resolvable.length) return { groups: 0, slots: 0 };
+    if (!unpaired.length) return { groups: 0, slots: 0 };
 
-    const eventsByClient = new Map();
-    for (const e of resolvable) {
-      const clientId = resolvedMap.get(e.id).clientId;
-      if (!eventsByClient.has(clientId)) eventsByClient.set(clientId, []);
-      eventsByClient.get(clientId).push(e);
+    const apptsByClient = new Map();
+    for (const a of unpaired) {
+      if (!apptsByClient.has(a.client_id)) apptsByClient.set(a.client_id, []);
+      apptsByClient.get(a.client_id).push(a);
     }
 
     const nowMs = Date.now();
-    const groups = buildGroups(eventsByClient, graceMinutes, nowMs);
-    const inserted = await insertGroups(groups, resolvedMap);
+    const groups = buildGroups(apptsByClient, graceMinutes, nowMs);
+    const inserted = await insertGroups(groups);
 
     console.log(
       `✅ [ConfirmationPairing] ${groups.length} grupo(s) formado(s), ${inserted} slot(s) insertado(s).`,

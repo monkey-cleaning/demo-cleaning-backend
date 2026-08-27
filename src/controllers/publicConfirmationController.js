@@ -13,43 +13,26 @@
 //   2. Si no existe, ya está resuelto (confirmed/released), o su horario ya
 //      pasó → página de resultado explicando por qué no se puede confirmar.
 //   3. Si es válido: marca este slot 'confirmed', actualiza el appointment
-//      vinculado a 'confirmed', limpia "CONFIRMAR" del título en GCal
-//      (sendUpdates:"none"), y libera automáticamente el/los otro(s) slot(s)
-//      'offered' del mismo group_id — cancelando su evento en GCal y su
-//      appointment.
+//      vinculado a 'confirmed', y libera automáticamente el/los otro(s)
+//      slot(s) 'offered' del mismo group_id — cancelando su appointment.
 //   4. Devuelve una página HTML simple (sin JS, sin login) con el resultado.
 //
-// Nunca lanza por un paso secundario: si no se pudo liberar el slot hermano
-// en GCal, se loguea pero NO se le muestra un error al cliente — ya vio
-// "confirmado", eso no puede fallar por un problema en la limpieza del otro
-// slot (mismo principio que notifyCancellationIfNeeded en
-// calendarController.js: las rutas de notificación/limpieza nunca son fatales).
+// Post-standalone: ya no hay GCal de por medio. `confirmation_slots.starts_at`
+// se mantiene sincronizado por el trigger de Postgres
+// `trg_sync_confirmation_slot_starts_at` (dispara sobre updates de
+// `appointments`), así que no hace falta ningún resync manual antes de
+// confirmar — Supabase ya es la única fuente de verdad y siempre está al día.
+//
+// Nunca lanza por un paso secundario: si no se pudo liberar el slot hermano,
+// se loguea pero NO se le muestra un error al cliente — ya vio "confirmado",
+// eso no puede fallar por un problema en la limpieza del otro slot (mismo
+// principio que notifyCancellationIfNeeded en calendarController.js: las
+// rutas de notificación/limpieza nunca son fatales).
 
-import { getCalendarClient } from "../services/googleCalendarClient.js";
 import { supabase } from "../supabaseClient.js";
 import { DateTime } from "luxon";
-import { CALENDAR_ID, TEAMS_CONFIG } from "./calendarController.js";
-import { invalidateCache, cacheKey } from "../services/calendarCache.js";
-import { getTeamColorId } from "../services/eventClassification.js";
-import { resyncSlotWithCalendar } from "../services/confirmationSlotSyncService.js";
 
 const TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
-
-// Quita la palabra "CONFIRMAR" (y los espacios sobrantes que deja) del
-// título. Espejo del regex de isPendingConfirmation en calendarController.js
-// — si ese regex cambia algún día, este debe cambiar junto con él.
-function stripConfirmarFromSummary(summary) {
-  return String(summary || "")
-    .replace(/confirmar/gi, "")
-    .replace(/\s{2,}/g, " ")
-    .trim();
-}
-
-function invalidateForStartsAt(startsAtIso) {
-  const dt = DateTime.fromISO(startsAtIso, { zone: TZ });
-  if (!dt.isValid) return;
-  invalidateCache(cacheKey(dt.year, dt.month));
-}
 
 // ── Página HTML de resultado (sin JS, sin dependencias externas) ────────────
 function resultPage({ title, message, tone = "success" }) {
@@ -80,22 +63,9 @@ function resultPage({ title, message, tone = "success" }) {
 </html>`;
 }
 
-// ── Libera un slot 'offered' hermano: cancela su evento en GCal y su appointment ─
-async function releaseSiblingSlot(calendar, slot) {
+// ── Libera un slot 'offered' hermano: cancela su appointment en Supabase ────
+async function releaseSiblingSlot(slot) {
   try {
-    try {
-      await calendar.events.delete({
-        calendarId: CALENDAR_ID,
-        eventId: slot.google_calendar_event_id,
-        sendUpdates: "none",
-      });
-    } catch (delErr) {
-      // 404/410 = ya no está en GCal (borrado a mano, doble-click, etc.) —
-      // mismo criterio que deleteCalendarEvent en calendarController.js.
-      const alreadyGone = delErr.code === 404 || delErr.code === 410;
-      if (!alreadyGone) throw delErr;
-    }
-
     if (slot.appointment_id) {
       const { error: apptErr } = await supabase
         .from("appointments")
@@ -117,8 +87,6 @@ async function releaseSiblingSlot(calendar, slot) {
         `⚠️ [PublicConfirm] Error marcando slot hermano ${slot.id} released:`,
         slotErr.message,
       );
-
-    invalidateForStartsAt(slot.starts_at);
   } catch (e) {
     console.error(
       `⚠️ [PublicConfirm] No se pudo liberar slot hermano ${slot.id}:`,
@@ -135,7 +103,7 @@ export async function confirmSlot(req, res) {
     const { data: slot, error } = await supabase
       .from("confirmation_slots")
       .select(
-        "id, group_id, google_calendar_event_id, appointment_id, client_id, starts_at, token, status",
+        "id, group_id, appointment_id, client_id, starts_at, token, status",
       )
       .eq("token", token)
       .maybeSingle();
@@ -187,19 +155,10 @@ export async function confirmSlot(req, res) {
       );
     }
 
-    const calendar = getCalendarClient();
-
-    // status === "offered" — resincronizar starts_at contra GCal antes de
-    // confirmar. Cierra la ventana entre "recordatorio enviado" y "cliente
-    // hace click": si el evento se reagendó después del email, se corrige
-    // acá antes de evaluar vencimiento y antes de mostrar "confirmado". Por
-    // decisión de negocio (no resetea el flujo, solo corrige lo mostrado).
-    await resyncSlotWithCalendar(slot, calendar);
-
-    // Validar vencimiento sobre el starts_at ya corregido — si no se
-    // resincroniza primero, un evento reagendado a un horario ya pasado
-    // seguiría evaluándose contra el starts_at viejo (no vencido) y
-    // confirmaría algo que en la realidad ya pasó.o
+    // status === "offered" — validar vencimiento sobre starts_at directo.
+    // Ya no hace falta resincronizar contra GCal antes: el trigger de
+    // Postgres `trg_sync_confirmation_slot_starts_at` mantiene este valor
+    // al día en cuanto cambia el appointment vinculado.
     const startsAt = DateTime.fromISO(slot.starts_at, { zone: TZ });
     if (startsAt.isValid && startsAt <= DateTime.now().setZone(TZ)) {
       return res.send(
@@ -212,52 +171,7 @@ export async function confirmSlot(req, res) {
       );
     }
 
-    // 1. Limpiar "CONFIRMAR" del título del evento confirmado.
-    try {
-      const current = await calendar.events.get({
-        calendarId: CALENDAR_ID,
-        eventId: slot.google_calendar_event_id,
-        timezone: TZ,
-      });
-      const newSummary = stripConfirmarFromSummary(current.data?.summary);
-
-      // Con color como fuente de verdad, al confirmar hay que cambiar colorId
-      // de Banana (CONFIRMAR) al del equipo (si existe) o a null (neutral/sin asignar).
-      let newColorId = null;
-      if (slot.appointment_id) {
-        const { data: appt, error: apptErr } = await supabase
-          .from("appointments")
-          .select("team_id")
-          .eq("id", slot.appointment_id)
-          .maybeSingle();
-
-        if (appt?.team_id) {
-          newColorId = getTeamColorId(appt.team_id, TEAMS_CONFIG);
-        }
-        // Si team_id es null, newColorId queda null (sin colorId en GCal)
-      }
-
-      await calendar.events.patch({
-        calendarId: CALENDAR_ID,
-        eventId: slot.google_calendar_event_id,
-        requestBody: {
-          summary: newSummary,
-          ...(newColorId !== null
-            ? { colorId: newColorId }
-            : { colorId: null }),
-        },
-        sendUpdates: "none",
-      });
-    } catch (gcalErr) {
-      console.error(
-        `⚠️ [PublicConfirm] No se pudo limpiar el título en GCal para ${slot.google_calendar_event_id}:`,
-        gcalErr.message,
-      );
-      // Seguimos igual — lo que importa es que Supabase quede consistente;
-      // el título se puede corregir a mano si hace falta.
-    }
-
-    // 2. Marcar el slot y el appointment como confirmados.
+    // 1. Marcar el slot y el appointment como confirmados.
     const nowIso = new Date().toISOString();
     const { error: slotUpdateErr } = await supabase
       .from("confirmation_slots")
@@ -281,12 +195,10 @@ export async function confirmSlot(req, res) {
         );
     }
 
-    invalidateForStartsAt(slot.starts_at);
-
-    // 3. Liberar el/los otro(s) slot(s) 'offered' del mismo grupo.
+    // 2. Liberar el/los otro(s) slot(s) 'offered' del mismo grupo.
     const { data: siblings, error: siblingsErr } = await supabase
       .from("confirmation_slots")
-      .select("id, google_calendar_event_id, appointment_id, starts_at, status")
+      .select("id, appointment_id, starts_at, status")
       .eq("group_id", slot.group_id)
       .eq("status", "offered")
       .neq("id", slot.id);
@@ -298,7 +210,7 @@ export async function confirmSlot(req, res) {
       );
     } else if (siblings?.length) {
       for (const sibling of siblings) {
-        await releaseSiblingSlot(calendar, sibling);
+        await releaseSiblingSlot(sibling);
       }
     }
 

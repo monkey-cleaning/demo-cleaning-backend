@@ -1,7 +1,10 @@
 import { supabase } from "../supabaseClient.js";
 import { DateTime } from "luxon";
-import { getEventsForMonth, TEAMS_CONFIG, TEAM_MEMBERS_MAP } from "./calendarController.js";
-
+import {
+  getEventsForRange,
+  TEAMS_CONFIG,
+  TEAM_MEMBERS_MAP,
+} from "./calendarController.js";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -79,12 +82,8 @@ function dominant(arr) {
 const IGNORED_SUMMARIES = ["lunch", "hg"]; // agregar los que necesites
 
 async function fetchEvents({ timeMin, timeMax }) {
-  const start = DateTime.fromISO(timeMin, { zone: TZ });
-  const end = DateTime.fromISO(timeMax, { zone: TZ });
-  const events = await getEventsForMonth(start.year, start.month);
+  const events = await getEventsForRange(timeMin, timeMax);
   return events.filter((e) => {
-    const t = DateTime.fromISO(e.startIso, { zone: TZ });
-    if (!(t >= start && t < end)) return false;
     const summary = (e.summary ?? "").trim().toLowerCase();
     return !IGNORED_SUMMARIES.includes(summary);
   });
@@ -173,26 +172,25 @@ export async function getTeamsToday(req, res) {
     const dayEnd = today.endOf("day");
 
     // ── 2. Pull today's events from the cache-backed month fetcher ─────────
-    const monthEvents = await getEventsForMonth(today.year, today.month);
-    const todayEvents = monthEvents.filter((e) => {
-      const start = DateTime.fromISO(e.startIso, { zone: TZ });
-      return start >= dayStart && start <= dayEnd;
-    });
+    const todayEvents = await getEventsForRange(
+      dayStart.toISO(),
+      dayStart.plus({ days: 1 }).toISO(),
+    );
 
     // ── 3. Pull service_type for today's appointments from Supabase ────────
     //    Keyed by gcal event id so we can enrich the event objects.
-    const gcalIds = todayEvents.map((e) => e.id).filter(Boolean);
-    let serviceTypeByGcalId = {};
+    const apptIds = todayEvents.map((e) => e.id).filter(Boolean);
+    let serviceTypeByApptId = {};
 
-    if (gcalIds.length > 0) {
+    if (apptIds.length > 0) {
       const { data: appts } = await supabase
         .from("appointments")
-        .select("google_calendar_event_id, service_type")
-        .in("google_calendar_event_id", gcalIds);
+        .select("id, service_type")
+        .in("id", apptIds);
 
       for (const a of appts ?? []) {
-        if (a.google_calendar_event_id && a.service_type) {
-          serviceTypeByGcalId[a.google_calendar_event_id] = a.service_type;
+        if (a.id && a.service_type) {
+          serviceTypeByApptId[a.id] = a.service_type;
         }
       }
     }
@@ -218,7 +216,7 @@ export async function getTeamsToday(req, res) {
       );
       const teamEvents = todayEvents.filter((e) => e.teamId === teamId);
       const serviceTypes = teamEvents.map(
-        (e) => serviceTypeByGcalId[e.id] ?? null,
+        (e) => serviceTypeByApptId[e.id] ?? null,
       );
 
       const members = teamEmails.map((email) => {

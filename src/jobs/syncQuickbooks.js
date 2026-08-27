@@ -556,4 +556,4 @@ export async function syncQuickbooksData({ fromDateOverride } = {}) {
 cron.schedule("0 3 * * *", syncQuickbooksData);
 
 // Correr una vez al arrancar el servidor
-syncQuickbooksData();
+// syncQuickbooksData();

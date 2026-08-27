@@ -16,7 +16,7 @@ import quickbooksAuthRoutes from "./routes/quickbooksAuthRoutes.js";
 import quickbooksRoutes from "./routes/quickbooksRoutes.js";
 import invoiceRoutes from "./routes/invoiceRoutes.js";
 import paymentRoutes from "./routes/paymentRoutes.js";
-import "./jobs/syncQuickbooks.js";
+// import "./jobs/syncQuickbooks.js";
 import calendarRoutes from "./routes/calendarRoutes.js";
 import publicConfirmationRoutes from "./routes/publicConfirmationRoutes.js";
 import clientRoutes from "./routes/clientRoutes.js";
@@ -26,8 +26,6 @@ import dashboardRoutes from "./routes/dashboardRoutes.js";
 import appointmentRoutes from "./routes/appointmentRoutes.js";
 import scheduleRoutes from "./routes/scheduleRoutes.js";
 import settingsRoutes from "./routes/settingsRoutes.js";
-import { startAppointmentSyncJob } from "./jobs/appointmentSyncJob.js";
-import { triggerAppointmentSync } from "./controllers/appointmentSyncController.js";
 import { startEtransferSyncJob } from "./jobs/eTransferSyncJob.js";
 import {
   getTeams,
@@ -41,7 +39,6 @@ import { startDailyDigestJob } from "./jobs/dailyDigestJob.js";
 import { startConfirmationPairingJob } from "./jobs/confirmationPairingJob.js";
 import { startConfirmationReminderJob } from "./jobs/confirmationReminderJob.js";
 import { startConfirmationReleaseJob } from "./jobs/confirmationReleaseJob.js";
-import { startConfirmationSlotDriftAlertJob } from "./jobs/confirmationSlotDriftAlertJob.js";
 import quoteRoutes from "./routes/quoteRoutes.js";
 import "./jobs/smsReminderCron.js";
 
@@ -80,7 +77,6 @@ app.use("/api/admin/clients", clientRoutes);
 app.use("/api/admin/staff", employeeRoutes);
 app.use("/api/admin/staff", scheduleRoutes);
 app.use("/api/admin/appointments", appointmentRoutes);
-app.post("/api/admin/appointments/sync", requireAdmin, triggerAppointmentSync);
 app.use("/api/admin/settings", settingsRoutes);
 app.get("/api/admin/teams", requireAdmin, getTeams);
 app.post("/api/admin/teams", requireAdmin, createTeam);
@@ -129,13 +125,11 @@ app.listen(PORT, () => {
   startClientStatusJob();
 });
 
-startAppointmentSyncJob();
-startEtransferSyncJob();
+// startEtransferSyncJob();
 startDailyDigestJob();
 // startConfirmationPairingJob();
 // startConfirmationReminderJob();
 // startConfirmationReleaseJob();
-startConfirmationSlotDriftAlertJob();
 
 // 07:50 AM Vancouver — da 10 min de margen antes de la ventana de las 8:00
 // Expresión en UTC: Vancouver es UTC-7 (PDT) / UTC-8 (PST)

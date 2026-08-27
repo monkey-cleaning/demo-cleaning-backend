@@ -26,8 +26,6 @@ import { DateTime } from "luxon";
 import { supabase } from "../supabaseClient.js";
 import { getRawSettings } from "../services/settingsService.js";
 import { sendConfirmationRequestEmail } from "../services/clientNotificationService.js";
-import { getCalendarClient } from "../services/googleCalendarClient.js";
-import { resyncSlotsWithCalendar } from "../services/confirmationSlotSyncService.js";
 
 const TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
 
@@ -41,7 +39,7 @@ async function findSlotsNeedingReminder(reminderDaysBefore, testClientId) {
   let query = supabase
     .from("confirmation_slots")
     .select(
-      "id, group_id, google_calendar_event_id, appointment_id, client_id, starts_at, token, status",
+      "id, group_id, appointment_id, client_id, starts_at, token, status",
     )
     .eq("status", "offered")
     .is("reminder_sent_at", null)
@@ -124,9 +122,6 @@ export async function runConfirmationReminderJob({ testClientId } = {}) {
       console.log("[ConfirmationReminder] Nada pendiente de recordatorio.");
       return { groups: 0, processed: 0, sent: 0, killSwitched: 0, skipped: 0 };
     }
-
-    const calendar = getCalendarClient();
-    await resyncSlotsWithCalendar(slots, calendar);
 
     const { apptById, clientById } = await enrichSlots(slots);
 

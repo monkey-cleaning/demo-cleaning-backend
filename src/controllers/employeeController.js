@@ -1,8 +1,4 @@
 import { supabase } from "../supabaseClient.js";
-import { DateTime } from 'luxon';
-import { getCalendarClient } from "../services/googleCalendarClient.js";
-
-const TZ = 'America/Vancouver';
 
 const PAGE_LIMIT = 25;
 
@@ -299,12 +295,17 @@ export async function searchEmployees(req, res) {
 /**
  * GET /api/admin/staff/available
  *
- * Devuelve empleados disponibles para un conjunto de eventos en una fecha específica.
- * Reusan la lógica de disponibilidad del auto-assign backend.
+ * Devuelve empleados disponibles para un conjunto de turnos en una fecha
+ * específica. Reusan la lógica de disponibilidad del auto-assign backend.
  *
  * Query params:
  *   - date: "YYYY-MM-DD" (obligatorio)
  *   - eventIds: comma-separated (obligatorio, puede ser vacío "")
+ *     ⚠️ Post-standalone: son appointments.id (uuid), NO event IDs de GCal.
+ *     El nombre del query param se mantiene igual para no romper el
+ *     contrato con el frontend (TeamAutoAssignModal) — si el frontend
+ *     todavía arma esta lista a partir de IDs de Google, hay que
+ *     actualizarlo para que mande appointments.id.
  *
  * Response:
  *   { ok: true, availableEmployees: [ { id, name, email, is_team_leader }, ... ] }
@@ -319,20 +320,13 @@ export async function getAvailableStaffForEvents(req, res) {
       return res.status(400).json({ ok: false, error: 'Invalid or missing date parameter (YYYY-MM-DD)' });
     }
 
-    const calendar = getCalendarClient();
-    const teamCalendarIds = (process.env.TEAM_CALENDAR_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
-    if (!teamCalendarIds.length) {
-      return res.status(500).json({ ok: false, error: 'TEAM_CALENDAR_IDS not configured' });
-    }
-    const calendarId = teamCalendarIds[0];
-
-    // Parsear event IDs
-    const requestedEventIds = eventIds && eventIds.trim()
+    // Parsear appointment IDs (antes eran event IDs de GCal)
+    const requestedAppointmentIds = eventIds && eventIds.trim()
       ? eventIds.split(',').map(s => s.trim()).filter(Boolean)
       : [];
 
-    if (requestedEventIds.length === 0) {
-      // Sin eventos especificados, devolver todos activos (sin restricción de horario)
+    if (requestedAppointmentIds.length === 0) {
+      // Sin turnos especificados, devolver todos activos (sin restricción de horario)
       const { data: employees, error } = await supabase
         .from('employees')
         .select('id, name, email, is_team_leader')
@@ -343,25 +337,18 @@ export async function getAvailableStaffForEvents(req, res) {
       return res.json({ ok: true, availableEmployees: employees ?? [] });
     }
 
-    // Fetchear eventos de GCal por ID (uno a uno)
-    const events = [];
-    for (const eventId of requestedEventIds) {
-      try {
-        const event = await calendar.events.get({
-          calendarId,
-          eventId,
-          fields: 'id,summary,start,end,status',
-        });
-        if (event.data && event.data.status !== 'cancelled') {
-          events.push(event.data);
-        }
-      } catch (e) {
-        console.warn(`[getAvailableStaffForEvents] no se pudo fetchear evento ${eventId}:`, e.message);
-      }
-    }
+    // Fetchear los appointments directo de Supabase en un solo query — antes
+    // era un loop secuencial de calendar.events.get(), uno por eventId.
+    const { data: appts, error: apptsErr } = await supabase
+      .from('appointments')
+      .select('id, scheduled_start_time, scheduled_end_time, status')
+      .in('id', requestedAppointmentIds)
+      .neq('status', 'cancelled');
 
-    if (events.length === 0) {
-      // Ninguno de los eventos es válido → devolver todos activos
+    if (apptsErr) throw apptsErr;
+
+    if (!appts || appts.length === 0) {
+      // Ninguno de los turnos es válido → devolver todos activos
       const { data: employees, error } = await supabase
         .from('employees')
         .select('id, name, email, is_team_leader')
@@ -372,15 +359,15 @@ export async function getAvailableStaffForEvents(req, res) {
       return res.json({ ok: true, availableEmployees: employees ?? [] });
     }
 
-    // Extraer horarios de los eventos
-    const eventTimes = events.map(e => {
-      const startStr = e.start?.dateTime || e.start?.date;
-      const endStr = e.end?.dateTime || e.end?.date;
-      if (!startStr || !endStr) return null;
-      const start = DateTime.fromISO(startStr, { zone: TZ });
-      const end = DateTime.fromISO(endStr, { zone: TZ });
-      return { startTime: start.toFormat('HH:mm:ss'), endTime: end.toFormat('HH:mm:ss') };
-    }).filter(Boolean);
+    // Horarios directo de las columnas ya guardadas — sin parseo de
+    // timezone: scheduled_start_time/scheduled_end_time ya vienen en
+    // HH:mm:ss, no hace falta pasarlas por DateTime.
+    const eventTimes = appts
+      .filter(a => a.scheduled_start_time && a.scheduled_end_time)
+      .map(a => ({
+        startTime: a.scheduled_start_time.slice(0, 8),
+        endTime: a.scheduled_end_time.slice(0, 8),
+      }));
 
     // Cargar empleados activos
     const { data: employees, error: empError } = await supabase

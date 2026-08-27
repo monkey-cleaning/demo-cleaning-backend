@@ -392,8 +392,7 @@ export async function searchAppointmentsByTitle(req, res) {
     const baseQuery = () =>
       supabase
         .from("appointments")
-        .select("google_calendar_event_id, gcal_summary, scheduled_date, starts_at, client_id")
-        .not("google_calendar_event_id", "is", null)
+        .select("id, gcal_summary, scheduled_date, starts_at, client_id")
         .neq("status", "cancelled")
         .ilike("gcal_summary", `%${q}%`);
  
@@ -412,7 +411,7 @@ export async function searchAppointmentsByTitle(req, res) {
     if (pastErr) throw pastErr;
  
     const mapRow = (row, isPast) => ({
-      id: row.google_calendar_event_id,
+      id: row.id,
       summary: row.gcal_summary || "(No title)",
       startIso: row.starts_at,
       startDate: row.scheduled_date,

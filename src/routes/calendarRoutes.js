@@ -11,7 +11,6 @@ import {
   getSeriesRecurrence,
   getAvailableStaff,
   getClientPreferences,
-  forceResync,
 } from "../controllers/calendarController.js";
 import { searchAppointmentsByTitle as searchCalendarEvents } from "../controllers/appointmentController.js";
 
@@ -27,5 +26,4 @@ r.get("/series/:masterId/recurrence", requireAdmin, getSeriesRecurrence);
 r.get("/events/:id/client-preferences", requireAdmin, getClientPreferences);
 r.patch("/events/:id", requireAdmin, updateCalendarEvent);
 r.delete("/events/:id", requireAdmin, deleteCalendarEvent);
-r.post("/sync/force", requireAdmin, forceResync);
 export default r;

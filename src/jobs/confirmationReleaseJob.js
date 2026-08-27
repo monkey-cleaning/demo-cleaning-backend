@@ -16,19 +16,16 @@
 // mismos group_id (aunque el propio starts_at del hermano todavía no haya
 // entrado en la ventana).
 //
-// Por cada grupo liberado: cancela el evento en GCal de cada slot (mismo
-// criterio 404/410 "ya no está" que deleteCalendarEvent en
-// calendarController.js), marca el appointment vinculado 'cancelled',
-// marca el slot 'released', invalida el caché del mes, y al final manda
-// UNA alerta a operaciones por grupo (services/opsNotificationService.js).
+// Post-standalone: Supabase es la única fuente de verdad, ya no hay evento
+// de GCal que cancelar antes de marcar el appointment 'cancelled' — se
+// cancela directo. Por cada grupo liberado: marca el appointment vinculado
+// 'cancelled', marca el slot 'released', y al final manda UNA alerta a
+// operaciones por grupo (services/opsNotificationService.js).
 
 import cron from "node-cron";
 import { DateTime } from "luxon";
-import { getCalendarClient } from "../services/googleCalendarClient.js";
 import { supabase } from "../supabaseClient.js";
 import { getRawSettings } from "../services/settingsService.js";
-import { CALENDAR_ID } from "../controllers/calendarController.js";
-import { invalidateCache, cacheKey } from "../services/calendarCache.js";
 import { sendOpsReleaseAlert } from "../services/opsNotificationService.js";
 
 const TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
@@ -66,9 +63,7 @@ async function findAllOfferedInGroups(groupIds) {
 
   const { data, error } = await supabase
     .from("confirmation_slots")
-    .select(
-      "id, group_id, google_calendar_event_id, appointment_id, client_id, starts_at, status",
-    )
+    .select("id, group_id, appointment_id, client_id, starts_at, status")
     .in("group_id", groupIds)
     .eq("status", "offered");
 
@@ -124,48 +119,8 @@ function formatSlotForAlert(slot, appt) {
   };
 }
 
-function invalidateForStartsAt(startsAtIso) {
-  const dt = DateTime.fromISO(startsAtIso, { zone: TZ });
-  if (!dt.isValid) return;
-  invalidateCache(cacheKey(dt.year, dt.month));
-}
-
-// ── 4. Libera un slot: cancela GCal, cancela appointment, marca released ────
-async function releaseSlot(calendar, slot) {
-  let gcalConfirmedGone = false;
-  try {
-    await calendar.events.delete({
-      calendarId: CALENDAR_ID,
-      eventId: slot.google_calendar_event_id,
-      sendUpdates: "none",
-    });
-    gcalConfirmedGone = true;
-  } catch (delErr) {
-    const alreadyGone = delErr.code === 404 || delErr.code === 410;
-    if (alreadyGone) {
-      gcalConfirmedGone = true;
-    } else {
-      console.error(
-        `⚠️ [ConfirmationRelease] Error borrando evento GCal ${slot.google_calendar_event_id} (code=${delErr.code}):`,
-        delErr.message,
-      );
-    }
-  }
-
-  // Si no podemos confirmar que el evento ya no existe en GCal, NO
-  // marcamos el appointment 'cancelled'. Hacerlo de todos modos deja el
-  // sistema inconsistente (evento vivo en GCal + status='cancelled' en
-  // Supabase), y el próximo appointmentSyncService lo "revive" a
-  // pending/completed porque lo sigue viendo activo — este fue el origen
-  // real del bug de "eventos cancelados que se recrean solos".
-  // El slot queda 'offered' y se reintenta en la próxima corrida horaria.
-  if (!gcalConfirmedGone) {
-    console.error(
-      `❌ [ConfirmationRelease] No se pudo confirmar el borrado de ${slot.google_calendar_event_id} — slot ${slot.id} diferido para reintento.`,
-    );
-    return { released: false };
-  }
-
+// ── 4. Libera un slot: cancela appointment, marca released ─────────────────
+async function releaseSlot(slot) {
   if (slot.appointment_id) {
     const { error: apptErr } = await supabase
       .from("appointments")
@@ -188,7 +143,6 @@ async function releaseSlot(calendar, slot) {
       slotErr.message,
     );
 
-  invalidateForStartsAt(slot.starts_at);
   return { released: true };
 }
 
@@ -214,7 +168,6 @@ export async function runConfirmationReleaseJob({ testClientId } = {}) {
     if (!slots.length) return { groups: 0, released: 0 };
 
     const { apptById, clientById } = await enrichSlots(slots);
-    const calendar = getCalendarClient();
 
     const byGroup = new Map();
     for (const s of slots) {
@@ -223,12 +176,10 @@ export async function runConfirmationReleaseJob({ testClientId } = {}) {
     }
 
     let released = 0;
-    let deferred = 0;
     for (const [groupId, groupSlots] of byGroup) {
       for (const slot of groupSlots) {
-        const result = await releaseSlot(calendar, slot);
-        if (result.released) released++;
-        else deferred++;
+        await releaseSlot(slot);
+        released++;
       }
 
       const client = clientById.get(groupSlots[0].client_id);
@@ -256,9 +207,9 @@ export async function runConfirmationReleaseJob({ testClientId } = {}) {
     }
 
     console.log(
-      `✅ [ConfirmationRelease] ${byGroup.size} grupo(s) procesados, ${released} slot(s) liberado(s), ${deferred} diferido(s) para reintento.`,
+      `✅ [ConfirmationRelease] ${byGroup.size} grupo(s) procesados, ${released} slot(s) liberado(s).`,
     );
-    return { groups: byGroup.size, released, deferred };
+    return { groups: byGroup.size, released };
   } catch (e) {
     console.error("❌ [ConfirmationRelease] Job failed:", e.message);
     return { groups: 0, released: 0, error: e.message };

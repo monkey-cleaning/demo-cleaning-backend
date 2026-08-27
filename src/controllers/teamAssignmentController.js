@@ -1,8 +1,4 @@
 import { supabase } from "../supabaseClient.js";
-import {
-  generateWeeklySuggestions,
-  applyWeeklyAssignments,
-} from "../services/teamAutoAssignService.js";
 import { validateColorOverrides } from "../services/colorAssignmentService.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -367,46 +363,23 @@ export async function updateTeam(req, res) {
 // GET /api/admin/staff/team-assignments/auto-suggestions?weekStart=YYYY-MM-DD
 // Read-only — arma formaciones sugeridas para toda la semana.
 // ─────────────────────────────────────────────────────────────────────────────
+// LAB, ago 2026 — teamAutoAssignService.js se cortó del MVP standalone
+// (Fase 2, tarea 2.8): dependía 100% de escribir/leer eventos reales de
+// Google Calendar (eventId de GCal, no appointment_id uuid), incompatible
+// con la arquitectura de este fork. Auto-assign queda fuera; el admin asigna
+// equipos a mano. Devuelve 410 en vez de crashear el import.
 export async function getAutoAssignSuggestions(req, res) {
-  try {
-    const { weekStart } = req.query;
-    if (!weekStart || !/^\d{4}-\d{2}-\d{2}$/.test(weekStart)) {
-      return res.status(400).json({
-        ok: false,
-        error: "weekStart query param required (YYYY-MM-DD)",
-      });
-    }
-    const result = await generateWeeklySuggestions({ weekStart });
-    return res.json(result);
-  } catch (e) {
-    console.error("❌ getAutoAssignSuggestions:", e.message);
-    return res.status(500).json({ ok: false, error: e.message });
-  }
+  return res.status(410).json({
+    ok: false,
+    error:
+      "Auto-assign no está disponible en esta instancia. Asigná equipos manualmente.",
+  });
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// POST /api/admin/staff/team-assignments/auto-apply
-// Body: { assignments: [{ date, team_id, employee_ids: string[] }, ...] }
-// ─────────────────────────────────────────────────────────────────────────────
 export async function applyAutoAssign(req, res) {
-  try {
-    const { assignments } = req.body ?? {};
-    if (!Array.isArray(assignments) || assignments.length === 0) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "assignments array required" });
-    }
-    const result = await applyWeeklyAssignments(assignments);
-    const failedGcal = (result.gcalResults ?? []).filter((r) => !r.ok);
-    if (failedGcal.length) {
-      console.warn(
-        `⚠️ applyAutoAssign: ${failedGcal.length} evento(s) no se pudieron sincronizar en GCal:`,
-        failedGcal,
-      );
-    }
-    return res.json(result);
-  } catch (e) {
-    console.error("❌ applyAutoAssign:", e.message);
-    return res.status(500).json({ ok: false, error: e.message });
-  }
+  return res.status(410).json({
+    ok: false,
+    error:
+      "Auto-assign no está disponible en esta instancia. Asigná equipos manualmente.",
+  });
 }

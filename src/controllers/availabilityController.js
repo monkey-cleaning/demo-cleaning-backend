@@ -1,8 +1,6 @@
 import { supabase } from "../services/supabaseService.js";
 import { getLeadEstimatedHours } from "../services/supabaseService.js";
 import { DateTime } from "luxon";
-import { getCalendarClient } from "../services/googleCalendarClient.js";
-import { getProgramacionesData } from "../services/googleSheetsService.js";
 import {
   groupSlotsIntoWindows,
   trimWindowToRequired,
@@ -19,82 +17,6 @@ const MIN_HOURS = 1.5;
 // ✅ WORK_END_HOUR y BUFFER_MINUTES ya no se hardcodean acá: se leen desde
 // `settings` (vía el settingsService compartido) al comienzo de cada
 // request, en getAvailability() y bookAvailability() respectivamente.
-
-// ---------------------------------------------------------------------------
-// Cleaner ↔ email mappings
-// ---------------------------------------------------------------------------
-const CLEANER_TO_EMAIL = {
-  Clara: "clara.suarez.novoa@gmail.com",
-  Javi: "javiermartoch@gmail.com",
-  Sofi: "sofiacadena3085@gmail.com",
-  Marcela: "marcela608@gmail.com",
-  Jhony: "jhony.blanco.higuera@gmail.com",
-  Esther: "wusuestherca2025@gmail.com",
-  Gael: "gaelcruzwk@gmail.com",
-  Vanesa: "vanesa-mares-95@hotmail.com",
-};
-
-const EMAIL_TO_CLEANER = Object.fromEntries(
-  Object.entries(CLEANER_TO_EMAIL).map(([name, email]) => [
-    email.toLowerCase(),
-    name,
-  ]),
-);
-
-function safeParseJson(str, fallback) {
-  try {
-    return JSON.parse(str);
-  } catch {
-    return fallback;
-  }
-}
-
-function uniqEmails(emails) {
-  const seen = new Set();
-  const out = [];
-  for (const e of emails) {
-    const email = String(e || "").trim();
-    if (!email) continue;
-    const key = email.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(email);
-  }
-  return out;
-}
-
-async function getAvailableTeamMembers(teamEmails, slotDate) {
-  try {
-    const progData = await getProgramacionesData();
-    const dayKey = DateTime.fromISO(slotDate).setZone(TZ).toISODate();
-
-    const availableCleaners = [];
-    for (const email of teamEmails) {
-      const cleanerName = EMAIL_TO_CLEANER[email.toLowerCase()];
-      if (!cleanerName) continue;
-
-      const hasAvailability = progData.some((row) => {
-        const rowDate = row[0];
-        const rowCleaner = row[1];
-        const freeHours = parseFloat(row[4]) || 0;
-
-        return (
-          rowDate === dayKey && rowCleaner === cleanerName && freeHours >= 1.75
-        );
-      });
-
-      if (hasAvailability) availableCleaners.push({ email, name: cleanerName });
-    }
-
-    return availableCleaners.slice(0, 2);
-  } catch (error) {
-    console.error("❌ Error reading Programaciones for attendees:", error);
-    return teamEmails.slice(0, 2).map((email) => ({
-      email,
-      name: EMAIL_TO_CLEANER[email.toLowerCase()] || "Unknown",
-    }));
-  }
-}
 
 // ---------------------------------------------------------------------------
 // reCAPTCHA v3
@@ -401,118 +323,100 @@ export async function bookAvailability(req, res) {
       });
     }
 
-    // ── Google Calendar event ─────────────────────────────────────────────
-    let googleEventId = null;
-
-    try {
-      const calendar = getCalendarClient();
-      const calendarId = process.env.TEAM_CALENDAR_IDS?.split(",")[0]?.trim();
-
-      if (!calendarId) {
-        console.warn("⚠️ No TEAM_CALENDAR_IDS, skipping Calendar event");
-      } else {
-        // Obtener config del team desde DB
-        const { data: teamCfgRow } = await supabase
-          .from("teams")
-          .select("color_ids, emojis")
-          .eq("id", team)
-          .single();
-
-        const teamEmoji = teamCfgRow?.emojis?.[0] ?? "📅";
-        const eventColor = teamCfgRow?.color_ids?.[0] ?? null;
-
-        // Obtener emails del team para la fecha del slot desde daily_team_assignments
-        const slotDate = DateTime.fromISO(startIso, { zone: TZ }).toISODate();
-        const { data: memberRows } = await supabase
-          .from("daily_team_assignments")
-          .select("employees(email)")
-          .eq("team_id", team)
-          .eq("date", slotDate);
-
-        const teamEmails = (memberRows ?? [])
-          .map((r) => r.employees?.email)
-          .filter(Boolean);
-
-        const availableMembers = await getAvailableTeamMembers(
-          teamEmails,
-          startIso,
-        );
-        const attendees = availableMembers.map((m) => ({ email: m.email }));
-
-        console.log("📩 Calendar attendees resolved", {
-          team,
-          poolSize: teamEmails.length,
-          availableMembers: availableMembers.map((m) => m.name),
-        });
-
-        const teamNumber = team.replace("team_", "");
-
-        const event = {
-          summary: `${teamEmoji} WEB BOOKING: ${name} #${teamNumber}`,
-          description: [
-            `Client: ${name}`,
-            `Phone: ${phone}`,
-            `Address: ${address}`,
-            `Email: ${email || "N/A"}`,
-            `Lead ID: ${leadId}`,
-            ``,
-            `Team assigned: ${availableMembers.map((m) => m.name).join(", ")}`,
-            `Duration: ${requiredHours}h`,
-            ``,
-            `Booked via web on ${DateTime.fromISO(nowIso).setZone(TZ).toLocaleString(DateTime.DATETIME_FULL)}`,
-          ].join("\n"),
-          location: address,
-          start: { dateTime: startIso, timeZone: TZ },
-          end: { dateTime: endIso, timeZone: TZ },
-          colorId: eventColor,
-          attendees,
-          guestsCanModify: false,
-          guestsCanInviteOthers: false,
-          guestsCanSeeOtherGuests: true,
-        };
-
-        const createdEvent = await calendar.events.insert({
-          calendarId,
-          resource: event,
-          sendUpdates: "all",
-        });
-
-        googleEventId = createdEvent.data.id;
-        console.log(`✅ Calendar event created: ${googleEventId}`);
-
-        await supabase
-          .from("cleaning_availability")
-          .update({ google_event_id: googleEventId })
-          .in("id", slotIds);
-      }
-    } catch (calErr) {
-      console.error("❌ Failed to create Calendar event:", calErr);
+    // ── Rollback helper: si algo falla después de marcar los slots como
+    // booked, hay que liberarlos — ya no hay Calendar de respaldo, Supabase
+    // es la única fuente de verdad y no podemos dejar slots "booked" sin
+    // un appointment real detrás. ────────────────────────────────────────
+    async function releaseSlots() {
+      await supabase
+        .from("cleaning_availability")
+        .update({
+          status: "available",
+          booked_at: null,
+          booked_name: null,
+          booked_phone: null,
+          booked_address: null,
+          booked_email: null,
+        })
+        .in("id", slotIds);
     }
 
-    // ── Lead → Client conversion ──────────────────────────────────────────
-    let conversionResult = null;
+    // ── Lead → Client conversion (ahora ANTES de crear el appointment:
+    // appointments.client_id es NOT NULL, necesitamos el client_id resuelto
+    // antes del insert). leadId ya es requerido más arriba, así que esto
+    // deja de ser opcional/non-fatal como era con el evento de Calendar. ──
+    let conversionResult;
+    try {
+      conversionResult = await convertLeadToClient(leadId, {
+        name,
+        phone,
+        address,
+        email,
+      });
+      console.log(
+        `🔄 Lead ${leadId} → Client ${conversionResult.client.id}` +
+          (conversionResult.wasExisting
+            ? " (existing client updated)"
+            : " (new client created)"),
+      );
+    } catch (conversionErr) {
+      console.error(
+        "❌ Lead conversion failed — liberando slots:",
+        conversionErr.message,
+      );
+      await releaseSlots();
+      return res.status(500).json({
+        ok: false,
+        error: "No se pudo procesar el lead — intentá de nuevo",
+      });
+    }
 
-    if (leadId) {
-      try {
-        conversionResult = await convertLeadToClient(leadId, {
-          name,
-          phone,
-          address,
-          email,
-        });
-        console.log(
-          `🔄 Lead ${leadId} → Client ${conversionResult.client.id}` +
-            (conversionResult.wasExisting
-              ? " (existing client updated)"
-              : " (new client created)"),
-        );
-      } catch (conversionErr) {
-        // Non-fatal: el booking ya está confirmado, no rompemos la respuesta.
-        console.error(
-          "❌ Lead conversion failed (booking still confirmed):",
-          conversionErr.message,
-        );
-      }
+    // ── Crear appointment (reemplaza al evento de Google Calendar) ────────
+    let appointmentId;
+    try {
+      const scheduledDate = DateTime.fromISO(startIso, { zone: TZ }).toISODate();
+      const scheduledStartTime = DateTime.fromISO(startIso, {
+        zone: TZ,
+      }).toFormat("HH:mm:ss");
+      const scheduledEndTime = DateTime.fromISO(endIso, { zone: TZ }).toFormat(
+        "HH:mm:ss",
+      );
+
+      const { data: apptRow, error: apptErr } = await supabase
+        .from("appointments")
+        .insert({
+          client_id: conversionResult.client.id,
+          scheduled_date: scheduledDate,
+          scheduled_start_time: scheduledStartTime,
+          scheduled_end_time: scheduledEndTime,
+          property_address: address,
+          estimated_hours: requiredHours,
+          team_id: team,
+          status: "pending",
+          special_instructions: `Booking público. Lead ID: ${leadId}. Email: ${email || "N/A"}.`,
+        })
+        .select("id")
+        .single();
+
+      if (apptErr) throw apptErr;
+      appointmentId = apptRow.id;
+
+      await supabase
+        .from("cleaning_availability")
+        .update({ appointment_id: appointmentId })
+        .in("id", slotIds);
+
+      console.log(`✅ Appointment created: ${appointmentId}`);
+    } catch (apptCreateErr) {
+      console.error(
+        "❌ Failed to create appointment — liberando slots:",
+        apptCreateErr,
+      );
+      await releaseSlots();
+      return res.status(500).json({
+        ok: false,
+        error: "No se pudo crear el turno — intentá de nuevo",
+      });
     }
 
     // ── Response ───────────────────────────────────────────────────────────
@@ -523,9 +427,9 @@ export async function bookAvailability(req, res) {
       endIso,
       requiredHours,
       bufferEndsAt: endDt.plus({ minutes: BUFFER_MINUTES }).toISO(),
-      googleEventId,
-      clientId: conversionResult?.client?.id ?? null,
-      wasNewClient: conversionResult ? !conversionResult.wasExisting : null,
+      appointmentId,
+      clientId: conversionResult.client.id,
+      wasNewClient: !conversionResult.wasExisting,
     });
   } catch (e) {
     console.error("❌ bookAvailability error:", e);
