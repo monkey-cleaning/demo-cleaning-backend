@@ -60,6 +60,16 @@ app.use(
 );
 app.use(express.json());
 
+// ── No cachear respuestas de la API ──────────────────────────────────────────
+// El panel admin trabaja siempre con datos vivos. Sin esto, el browser puede
+// servir respuestas viejas desde el disk cache sin revalidar — pasó con un
+// 410 stub viejo de /auto-suggestions que quedó cacheado tras el redeploy
+// (los 410 son cacheables por defecto según RFC 7231).
+app.use("/api", (_req, res, next) => {
+  res.set("Cache-Control", "no-store");
+  next();
+});
+
 // ── Leads & Blog ─────────────────────────────────────────────────────────────
 app.use("/api/leads", leadRoutes);
 app.use("/api/blogs", blogRoutes);
