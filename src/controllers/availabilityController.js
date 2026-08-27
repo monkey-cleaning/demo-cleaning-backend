@@ -11,34 +11,13 @@ import {
   getWorkWindow,
   getOperationalSettings,
 } from "../services/settingsService.js";
+import { verifyRecaptcha } from "../services/recaptchaService.js";
 
 const TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
 const MIN_HOURS = 1.5;
 // ✅ WORK_END_HOUR y BUFFER_MINUTES ya no se hardcodean acá: se leen desde
 // `settings` (vía el settingsService compartido) al comienzo de cada
 // request, en getAvailability() y bookAvailability() respectivamente.
-
-// ---------------------------------------------------------------------------
-// reCAPTCHA v3
-// ---------------------------------------------------------------------------
-const RECAPTCHA_SECRET = process.env.RECAPTCHA_SECRET_KEY;
-
-async function verifyRecaptcha(token, remoteIp) {
-  if (!RECAPTCHA_SECRET) return false;
-
-  const params = new URLSearchParams({
-    secret: RECAPTCHA_SECRET,
-    response: token,
-  });
-  if (remoteIp) params.append("remoteip", remoteIp);
-  const r = await fetch("https://www.google.com/recaptcha/api/siteverify", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: params,
-  });
-  const data = await r.json();
-  return data.success && (data.score || 0) >= 0.5;
-}
 
 // ---------------------------------------------------------------------------
 // GET /api/availability[?leadId=X]
@@ -196,7 +175,9 @@ export async function bookAvailability(req, res) {
         .json({ ok: false, error: "Missing recaptchaToken" });
     }
 
-    const isHuman = await verifyRecaptcha(recaptchaToken, req.ip);
+    const isHuman = await verifyRecaptcha(recaptchaToken, req.ip, {
+      context: "booking",
+    });
     if (!isHuman) {
       return res
         .status(400)
