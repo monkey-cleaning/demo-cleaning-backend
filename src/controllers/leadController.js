@@ -11,54 +11,7 @@ import {
 } from "../services/clientQuoteEmailService.js";
 import { getSuggestedSlots } from "../services/availabilityService.js";
 import { sendLeadEmailFailureAlert } from "../services/opsNotificationService.js";
-
-const RECAPTCHA_SECRET = process.env.RECAPTCHA_SECRET_KEY;
-
-// Misma env que usan los templates de clientQuoteEmailService.js.
-const BRAND_NAME = process.env.BRAND_NAME || "Demo Cleaning Co.";
-
-// 🛡️ Verificar reCAPTCHA v3 con Google
-async function verifyRecaptcha(token, remoteIp) {
-  if (!RECAPTCHA_SECRET) {
-    console.warn("[reCAPTCHA] RECAPTCHA_SECRET_KEY is not set");
-    return false;
-  }
-
-  const params = new URLSearchParams({
-    secret: RECAPTCHA_SECRET,
-    response: token,
-  });
-  if (remoteIp) params.append("remoteip", remoteIp);
-
-  const r = await fetch("https://www.google.com/recaptcha/api/siteverify", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: params,
-  });
-
-  const data = await r.json();
-  console.log("[reCAPTCHA] siteverify response:", JSON.stringify(data));
-
-  if (!data.success) {
-    console.warn(
-      "[reCAPTCHA] Verification failed. error-codes:",
-      data["error-codes"],
-    );
-    return false;
-  }
-
-  const score = data.score || 0;
-  console.log(
-    `[reCAPTCHA] success=true | score=${score} | action=${data.action} | hostname=${data.hostname}`,
-  );
-
-  if (score < 0.5) {
-    console.warn(`[reCAPTCHA] Score too low: ${score}`);
-    return false;
-  }
-
-  return true;
-}
+import { verifyRecaptcha } from "../services/recaptchaService.js";
 
 export async function createLead(req, res) {
   try {
@@ -68,7 +21,9 @@ export async function createLead(req, res) {
       return res.status(400).json({ error: "Missing reCAPTCHA token" });
     }
 
-    const isHuman = await verifyRecaptcha(recaptchaToken, req.ip);
+    const isHuman = await verifyRecaptcha(recaptchaToken, req.ip, {
+      context: "lead",
+    });
     if (!isHuman) {
       return res.status(400).json({ error: "Failed reCAPTCHA validation" });
     }
