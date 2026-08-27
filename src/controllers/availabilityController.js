@@ -54,17 +54,32 @@ export async function getAvailability(req, res) {
 
     const nowIso = DateTime.now().toUTC().toISO(); // ya existe Luxon en el import
     const cutoffIso = DateTime.now().toUTC().plus({ hours: 24 }).toISO();
+    // Cota superior: el generador produce 30 dias; 60 deja margen si alguien
+    // sube rangeDays, sin traerse la tabla entera si quedan slots viejos.
+    const horizonIso = DateTime.now().toUTC().plus({ days: 60 }).toISO();
 
-    const { data, error } = await supabase
-      .from("cleaning_availability")
-      .select("id, team, start_at, end_at")
-      .eq("status", "available")
-      .gte("start_at", cutoffIso) // <-- era nowIso
-      .order("start_at", { ascending: true });
+    // PostgREST corta en 1000 filas por defecto y esta query no llevaba limite,
+    // asi que se truncaba en silencio: con el horizonte de 30 dias del generador
+    // son ~3600 slots y la disponibilidad se cortaba alrededor del dia 10, sin
+    // error ni aviso. Paginamos explicitamente en vez de confiar en el default.
+    const PAGE = 1000;
+    const rawSlots = [];
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await supabase
+        .from("cleaning_availability")
+        .select("id, team, start_at, end_at")
+        .eq("status", "available")
+        .gte("start_at", cutoffIso) // <-- era nowIso
+        .lte("start_at", horizonIso)
+        .order("start_at", { ascending: true })
+        .range(from, from + PAGE - 1);
 
-    if (error) throw error;
+      if (error) throw error;
+      if (!data?.length) break;
 
-    const rawSlots = data || [];
+      rawSlots.push(...data);
+      if (data.length < PAGE) break;
+    }
 
     console.log(
       `[getAvailability] leadId=${leadId || "none"} | raw slots from DB: ${rawSlots.length}`,
@@ -204,6 +219,13 @@ export async function bookAvailability(req, res) {
     const startDt = DateTime.fromISO(startIso, { zone: "utc" });
     const endDt = startDt.plus({ hours: requiredHours });
     const endIso = endDt.toISO();
+
+    // Los slots se bloquean hasta el fin del servicio MAS el buffer de
+    // traslado, para que el equipo no quede encadenado a otro booking sin
+    // margen. findCoveringSlotIds() usa este rango; la validacion de huecos
+    // de mas abajo sigue exigiendo cobertura solo hasta endDt (el buffer
+    // puede caer fuera de la ventana publicada sin invalidar la reserva).
+    const bufferEndIso = endDt.plus({ minutes: BUFFER_MINUTES }).toISO();
 
     const minAllowedStart = DateTime.now().toUTC().plus({ hours: 24 });
     if (startDt < minAllowedStart) {

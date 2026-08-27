@@ -14,6 +14,9 @@ import { sendLeadEmailFailureAlert } from "../services/opsNotificationService.js
 
 const RECAPTCHA_SECRET = process.env.RECAPTCHA_SECRET_KEY;
 
+// Misma env que usan los templates de clientQuoteEmailService.js.
+const BRAND_NAME = process.env.BRAND_NAME || "Demo Cleaning Co.";
+
 // 🛡️ Verificar reCAPTCHA v3 con Google
 async function verifyRecaptcha(token, remoteIp) {
   if (!RECAPTCHA_SECRET) {
@@ -85,7 +88,7 @@ export async function createLead(req, res) {
     }
 
     // Opcional: marca de fuente para distinguir este formulario
-    if (!leadData.source) leadData.source = "MonkeyCleaning Booking Form";
+    if (!leadData.source) leadData.source = `${BRAND_NAME} Booking Form`;
 
     // Normalize preferredTime: the form now sends an array; guard against legacy string values.
     if (leadData.preferredTime !== undefined) {
@@ -94,6 +97,25 @@ export async function createLead(req, res) {
           ? [leadData.preferredTime]
           : [];
       }
+    }
+
+    // Cotizacion: se calcula ACA, antes de guardar, para que las horas
+    // estimadas queden persistidas en el lead. GET /api/availability?leadId=
+    // y POST /api/availability/book leen leads.estimated_hours_per_person para
+    // dimensionar la ventana de reserva; si queda en null caen a MIN_HOURS y
+    // se agenda menos tiempo del que prometio el email de cotizacion.
+    const isCommercial =
+      /office|commercial/i.test(leadData.serviceOption || "") ||
+      leadData.serviceType === "specialized";
+
+    let quote = null;
+    if (!isCommercial) {
+      quote = calculateQuote(leadData);
+      leadData.estimatedTotalHours = quote.totalHrs;
+      leadData.estimatedHoursPerPerson = quote.hrsPerPerson;
+      console.log(
+        `[QUOTE] ${leadData.email} | ${quote.calcType} | ${quote.totalHrs}h total | ${quote.hrsPerPerson}h por persona | $${quote.totalAmount}`,
+      );
     }
 
     // 4️⃣ Intentar enviar a Zoho primero
@@ -141,10 +163,6 @@ export async function createLead(req, res) {
     try {
       // Solo encolar si la base de datos guardó exitosamente el lead
       if (dbLead?.id) {
-        const isCommercial =
-          /office|commercial/i.test(leadData.serviceOption || "") ||
-          leadData.serviceType === "specialized";
-
         const delayMinutes = 1;
         const dueAt = new Date(
           Date.now() + delayMinutes * 60 * 1000,
@@ -164,9 +182,9 @@ export async function createLead(req, res) {
             leadData: leadData, // Snapshot del lead
           };
         } else {
-          // 1️⃣ Reutilizar el quote ya calculado (hrsPerPerson ya está en leadData)
-          const calc = calculateQuote(leadData);
-          console.log("[DEBUG] calc result:", JSON.stringify(calc));
+          // Reutilizar el quote calculado arriba — el mismo que se persistio
+          // en el lead — para que el email y la disponibilidad no diverjan.
+          const calc = quote;
 
           // 2️⃣ Pedir slots con la duración correcta para este cliente
           let slots = [];
