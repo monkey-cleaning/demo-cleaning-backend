@@ -674,7 +674,29 @@ export async function updateCalendarEvent(req, res) {
     const teamIdFromColor = teamIdFromColorId(resolvedColorId);
 
     // ── scope="following" ────────────────────────────────────────────────
-    if (scope === "following") {
+    // Se salta si la serie está degenerada (sin maestro localizable o sin
+    // regla legible): en ese caso se cae al flujo de edición puntual de más
+    // abajo en vez de tirar 400 y dejar al usuario sin poder editar.
+    const followingMaster =
+      scope === "following" && existing.series_id
+        ? (
+            await supabase
+              .from("appointments")
+              .select("*")
+              .eq("id", existing.series_id)
+              .single()
+          ).data
+        : null;
+    const followingRecurrence = followingMaster
+      ? deserializeRecurrence(followingMaster.recurrence_rule)
+      : null;
+    if (scope === "following" && !followingRecurrence) {
+      console.warn(
+        `[updateCalendarEvent] scope="following" sobre serie ${existing.series_id} sin recurrencia legible — se edita solo esta ocurrencia`,
+      );
+    }
+
+    if (scope === "following" && followingRecurrence) {
       if (!startIso) {
         return res.status(400).json({
           ok: false,
@@ -682,24 +704,8 @@ export async function updateCalendarEvent(req, res) {
         });
       }
       const masterId = existing.series_id;
-      const { data: masterRow, error: masterErr } = await supabase
-        .from("appointments")
-        .select("*")
-        .eq("id", masterId)
-        .single();
-      if (masterErr || !masterRow) {
-        return res
-          .status(400)
-          .json({ ok: false, error: "Series master not found" });
-      }
-
-      const oldRecurrence = deserializeRecurrence(masterRow.recurrence_rule);
-      if (!oldRecurrence) {
-        return res.status(400).json({
-          ok: false,
-          error: "Could not read the series' recurrence rule.",
-        });
-      }
+      const masterRow = followingMaster;
+      const oldRecurrence = followingRecurrence;
       const { freq, interval } = extractFreqInterval(oldRecurrence);
 
       // ¿El corte cae en (o antes de) la primera ocurrencia? Entonces "esta y
