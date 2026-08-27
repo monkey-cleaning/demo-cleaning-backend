@@ -53,10 +53,7 @@ app.use(
     origin: [
       "http://localhost:5173",
       "http://localhost:5174",
-      "https://landing-monkey-frontend.onrender.com",
-      "https://monkeycleaning.com/",
-      "https://monkeycleaning.com",
-      "https://landing-monkey-frontend-dev.onrender.com",
+      "https://demo-cleaning-frontend.onrender.com",
     ],
     credentials: true,
   }),
