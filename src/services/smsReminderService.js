@@ -1,17 +1,42 @@
 import twilio from "twilio";
 import { supabase } from "../supabaseClient.js";
 
-const twilioClient = twilio(
-  process.env.TWILIO_ACCOUNT_SID,
-  process.env.TWILIO_AUTH_TOKEN,
-);
+// El SDK de Twilio TIRA si el accountSid es falsy, así que construirlo al cargar
+// el módulo hacía que el backend no booteara sin TWILIO_* en el entorno. Ahora
+// es lazy: se construye la primera vez que se necesita y se cachea; sin
+// credenciales devuelve null y processReminders() sale temprano con un warning.
+let _twilioClient;
+export function getTwilioClient() {
+  if (_twilioClient !== undefined) return _twilioClient;
+  const sid = process.env.TWILIO_ACCOUNT_SID;
+  const token = process.env.TWILIO_AUTH_TOKEN;
+  if (!sid || !token) {
+    console.warn(
+      "[SMS] TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN no configurados — el envío de SMS queda deshabilitado.",
+    );
+    _twilioClient = null;
+    return null;
+  }
+  _twilioClient = twilio(sid, token);
+  return _twilioClient;
+}
+
 const FROM_NUMBER = process.env.TWILIO_PHONE_NUMBER;
 const MESSAGING_SERVICE_SID = process.env.TWILIO_MESSAGING_SERVICE_SID;
+
+// URL a la que Twilio postea los status callbacks de entrega de cada SMS
+// (webhook POST /api/sms/status — ver controllers/smsWebhookController.js).
+function statusCallbackUrl() {
+  if (process.env.SMS_STATUS_CALLBACK_URL)
+    return process.env.SMS_STATUS_CALLBACK_URL;
+  const base = (process.env.PUBLIC_BACKEND_URL || "").replace(/\/$/, "");
+  return base ? `${base}/api/sms/status` : null;
+}
 
 const REMINDER_STATUSES = ["pending", "confirmed"];
 
 // clients.phone viene como "778-977-2870" (NANP, sin código de país)
-function toE164(rawPhone) {
+export function toE164(rawPhone) {
   if (!rawPhone) return null;
   if (rawPhone.startsWith("+")) return rawPhone;
   const digits = rawPhone.replace(/\D/g, "");
@@ -121,12 +146,23 @@ async function sendReminder(appointment) {
 
   if (!phone || !addressOk) return;
 
+  const twilioClient = getTwilioClient();
+  if (!twilioClient) {
+    await supabase
+      .from("sms_reminders")
+      .update({ status: "failed", error_message: "twilio_not_configured" })
+      .eq("id", reminder.id);
+    return;
+  }
+
   try {
+    const callbackUrl = statusCallbackUrl();
     const message = await twilioClient.messages.create({
       body: buildReminderMessage(appointment, client),
       ...(MESSAGING_SERVICE_SID
         ? { messagingServiceSid: MESSAGING_SERVICE_SID }
         : { from: FROM_NUMBER }),
+      ...(callbackUrl ? { statusCallback: callbackUrl } : {}),
       to: phone,
     });
 
@@ -151,6 +187,10 @@ async function sendReminder(appointment) {
 }
 
 async function processReminders() {
+  if (!getTwilioClient()) {
+    console.warn("[SMS] processReminders: Twilio no configurado, se omite.");
+    return;
+  }
   const appointments = await findUpcomingAppointmentsNeedingReminder();
   console.log(`Processing ${appointments.length} SMS reminders`);
 
