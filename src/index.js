@@ -44,6 +44,10 @@ import { startConfirmationPairingJob } from "./jobs/confirmationPairingJob.js";
 import { startConfirmationReminderJob } from "./jobs/confirmationReminderJob.js";
 import { startConfirmationReleaseJob } from "./jobs/confirmationReleaseJob.js";
 import quoteRoutes from "./routes/quoteRoutes.js";
+import staffAuthRoutes from "./routes/staffAuthRoutes.js";
+import staffCalendarRoutes from "./routes/staffCalendarRoutes.js";
+import staffHoursRoutes from "./routes/staffHoursRoutes.js";
+import staffRequestsRoutes from "./routes/staffRequestsRoutes.js";
 import "./jobs/smsReminderCron.js";
 
 dotenv.config();
@@ -111,6 +115,12 @@ app.get("/api/admin/teams", requireAdmin, getTeams);
 app.post("/api/admin/teams", requireAdmin, createTeam);
 app.patch("/api/admin/teams/:id", requireAdmin, updateTeam);
 app.use("/api/dashboard", dashboardRoutes);
+
+// ── Staff (portal de cleaners, rol 'cleaner' — LAB423 + LAB425) ──────────────
+app.use("/api/staff/auth", staffAuthRoutes);
+app.use("/api/staff/calendar", staffCalendarRoutes);
+app.use("/api/staff/hours", staffHoursRoutes);
+app.use("/api/staff/requests", staffRequestsRoutes);
 
 // ── Jobs & Availability ──────────────────────────────────────────────────────
 app.use("/api/jobs", jobRoutes);

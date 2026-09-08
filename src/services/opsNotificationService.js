@@ -636,3 +636,68 @@ export async function sendCoverageAlert({ dateLabel, unassigned, endingSoon, gap
     label: "CoverageAlert",
   });
 }
+
+/**
+ * LAB425 — un cleaner pidió licencia desde el portal. Portado de Monkey.
+ * NO bloquea la agenda (a diferencia de employee_time_off).
+ * @param {{ employeeName?: string, startDate: string, endDate: string, reason?: string, notes?: string }} p
+ */
+export async function sendStaffTimeOffRequestAlert({
+  employeeName,
+  startDate,
+  endDate,
+  reason,
+  notes,
+}) {
+  const recipients = await opsRecipients();
+  const name = employeeName?.trim() || "Unknown cleaner";
+  const rangeLabel =
+    startDate === endDate
+      ? escapeHtml(startDate)
+      : `${escapeHtml(startDate)} → ${escapeHtml(endDate)}`;
+
+  const bodyHtml = `
+    <p style="margin:0 0 4px;font-size:11px;font-weight:700;color:#2563eb;letter-spacing:1px;text-transform:uppercase;">Time off requested</p>
+    <h1 style="margin:0 0 4px;font-size:20px;color:#0d1b3e;">${escapeHtml(name)}</h1>
+    <p style="margin:0 0 16px;font-size:14px;color:#64748b;">${rangeLabel}</p>
+    ${reason ? `<p style="margin:0 0 8px;font-size:13px;color:#334155;"><b>Reason:</b> ${escapeHtml(reason)}</p>` : ""}
+    ${notes ? `<p style="margin:0 0 8px;font-size:13px;color:#334155;white-space:pre-wrap;"><b>Notes:</b> ${escapeHtml(notes)}</p>` : ""}
+    <p style="margin:16px 0 0;font-size:12px;color:#94a3b8;">
+      This is just the request — it does NOT block the schedule. If approved, add the actual block in /admin/staff as usual.
+    </p>
+  `;
+
+  await sendOpsEmail({
+    recipients,
+    subject: `Time off requested: ${name} (${rangeLabel})`,
+    bodyHtml,
+    label: "StaffTimeOffRequestAlert",
+  });
+}
+
+/**
+ * LAB425 — un cleaner mandó un reclamo desde el portal. Portado de Monkey.
+ * @param {{ employeeName?: string, message: string }} p
+ */
+export async function sendStaffComplaintAlert({ employeeName, message }) {
+  if (!message?.trim()) return;
+  const recipients = await opsRecipients();
+  const name = employeeName?.trim() || "Unknown cleaner";
+
+  const bodyHtml = `
+    <p style="margin:0 0 4px;font-size:11px;font-weight:700;color:#e11d48;letter-spacing:1px;text-transform:uppercase;">Staff complaint — needs review</p>
+    <h1 style="margin:0 0 4px;font-size:20px;color:#0d1b3e;">${escapeHtml(name)}</h1>
+    <table width="100%" cellpadding="0" cellspacing="0">
+      <tr><td style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:16px 20px;">
+        <p style="margin:0;font-size:14px;color:#0d1b3e;white-space:pre-wrap;">${escapeHtml(message.trim())}</p>
+      </td></tr>
+    </table>
+  `;
+
+  await sendOpsEmail({
+    recipients,
+    subject: `Staff complaint: ${name}`,
+    bodyHtml,
+    label: "StaffComplaintAlert",
+  });
+}
