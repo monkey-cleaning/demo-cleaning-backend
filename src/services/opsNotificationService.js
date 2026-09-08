@@ -532,3 +532,107 @@ export async function sendSurveyFeedbackAlert({ client, rating, feedback }) {
     label: "SurveyFeedbackAlert",
   });
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Alerta diaria de cobertura (job coverageAlertJob.js). Combina en un solo
+// mail: (a) eventos de mañana sin cleaner, (b) series recurrentes por terminar,
+// (c) huecos en el medio de una serie viva (ocurrencia borrada por accidente).
+// Versión lean adaptada de los jobs de alertas de Monkey (LAB419 + coverage
+// monitor) — sin Google Calendar, todo contra appointments + recurrenceService.
+//
+// Va a ops_alert_email + la env var opcional COVERAGE_ALERT_EXTRA_EMAILS
+// (deduplicada), para que un problema de cobertura no se pierda porque solo
+// una persona mira el buzón de ops.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function coverageTable(rows, cols) {
+  if (!rows.length) return "";
+  const head = cols
+    .map(
+      (c) =>
+        `<th align="left" style="padding:6px 10px;font-size:11px;color:#94a3b8;text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid #e2e8f0;">${escapeHtml(c.label)}</th>`,
+    )
+    .join("");
+  const body = rows
+    .map(
+      (r) =>
+        `<tr>${cols
+          .map(
+            (c) =>
+              `<td style="padding:8px 10px;font-size:13px;color:#334155;border-bottom:1px solid #f1f5f9;">${escapeHtml(String(c.get(r) ?? "—"))}</td>`,
+          )
+          .join("")}</tr>`,
+    )
+    .join("");
+  return `<table width="100%" cellpadding="0" cellspacing="0" style="margin:6px 0 18px;"><tr>${head}</tr>${body}</table>`;
+}
+
+/**
+ * @param {{
+ *   dateLabel: string,
+ *   unassigned: Array<{ timeLabel: string, summary: string, address?: string, teamHint?: string }>,
+ *   endingSoon: Array<{ client: string, cadence: string, remaining: number, lastDate: string }>,
+ *   gaps: Array<{ client: string, series: string, missingDate: string, kind: string, actionable: boolean }>,
+ * }} p
+ */
+export async function sendCoverageAlert({ dateLabel, unassigned, endingSoon, gaps }) {
+  const recipients = await opsRecipients({
+    extraEnvKey: "COVERAGE_ALERT_EXTRA_EMAILS",
+  });
+
+  const total =
+    (unassigned?.length || 0) + (endingSoon?.length || 0) + (gaps?.length || 0);
+  if (!total) return;
+
+  const sections = [];
+
+  if (unassigned?.length) {
+    sections.push(`
+      <h2 style="margin:20px 0 4px;font-size:15px;color:#e11d48;">🔴 tomorrow — no cleaner assigned (${unassigned.length})</h2>
+      <p style="margin:0 0 4px;font-size:13px;color:#64748b;">Service events on ${escapeHtml(dateLabel)} with nobody in appointment_teams. Payroll has no record of who did these until someone is assigned.</p>
+      ${coverageTable(unassigned, [
+        { label: "Time", get: (r) => r.timeLabel },
+        { label: "Event", get: (r) => r.summary },
+        { label: "Address", get: (r) => r.address },
+        { label: "Team hint", get: (r) => r.teamHint },
+      ])}`);
+  }
+
+  if (endingSoon?.length) {
+    sections.push(`
+      <h2 style="margin:20px 0 4px;font-size:15px;color:#f59e0b;">🟠 recurring series ending soon (${endingSoon.length})</h2>
+      <p style="margin:0 0 4px;font-size:13px;color:#64748b;">The RRULE's own count/until runs out shortly — renew the series before the client loses service.</p>
+      ${coverageTable(endingSoon, [
+        { label: "Client", get: (r) => r.client },
+        { label: "Cadence", get: (r) => r.cadence },
+        { label: "Turns left", get: (r) => r.remaining },
+        { label: "Last date", get: (r) => r.lastDate },
+      ])}`);
+  }
+
+  if (gaps?.length) {
+    sections.push(`
+      <h2 style="margin:20px 0 4px;font-size:15px;color:#2563eb;">🟡 gaps inside a live series (${gaps.length})</h2>
+      <p style="margin:0 0 4px;font-size:13px;color:#64748b;">A date the RRULE says should have an appointment but none exists (likely deleted by accident) or the instance is cancelled.</p>
+      ${coverageTable(gaps, [
+        { label: "Client", get: (r) => r.client },
+        { label: "Series", get: (r) => r.series },
+        { label: "Missing date", get: (r) => r.missingDate },
+        { label: "Kind", get: (r) => (r.actionable ? `${r.kind} (act now)` : r.kind) },
+      ])}`);
+  }
+
+  const bodyHtml = `
+    <p style="margin:0 0 4px;font-size:11px;font-weight:700;color:#0d1b3e;letter-spacing:1px;text-transform:uppercase;">Coverage check — ${escapeHtml(dateLabel)}</p>
+    <h1 style="margin:0 0 4px;font-size:20px;color:#0d1b3e;">${total} thing${total === 1 ? "" : "s"} to look at</h1>
+    ${sections.join("")}
+    <p style="margin:20px 0 0;font-size:12px;color:#94a3b8;">This alert repeats every day until each item is resolved.</p>
+  `;
+
+  await sendOpsEmail({
+    recipients,
+    subject: `Coverage: ${total} item${total === 1 ? "" : "s"} — ${dateLabel}`,
+    bodyHtml,
+    label: "CoverageAlert",
+  });
+}

@@ -39,6 +39,7 @@ import { runFollowUpQuoteJob } from "./jobs/followUpQuoteJob.js";
 import { generateAvailability } from "./services/availabilityGeneratorService.js";
 import seoRoutes from "./routes/seoRoutes.js";
 import { startDailyDigestJob } from "./jobs/dailyDigestJob.js";
+import { startCoverageAlertJob } from "./jobs/coverageAlertJob.js";
 import { startConfirmationPairingJob } from "./jobs/confirmationPairingJob.js";
 import { startConfirmationReminderJob } from "./jobs/confirmationReminderJob.js";
 import { startConfirmationReleaseJob } from "./jobs/confirmationReleaseJob.js";
@@ -158,6 +159,9 @@ app.listen(PORT, () => {
 
 // startEtransferSyncJob();
 startDailyDigestJob();
+// Alerta diaria de cobertura: eventos de mañana sin cleaner + series recurrentes
+// por terminar + huecos en el medio de una serie. Solo lee y manda mail a ops.
+startCoverageAlertJob();
 // startConfirmationPairingJob();
 // startConfirmationReminderJob();
 // startConfirmationReleaseJob();
