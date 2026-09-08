@@ -13,6 +13,48 @@ import {
 
 const PAGE_LIMIT = 25;
 
+// clients.id del cliente "Unassigned / pending review" — todo appointment cuyo
+// nombre no matcheó un cliente real cae acá. No es un cliente de verdad: no
+// cuenta para "servicios" ni para los buckets de estado.
+const PLACEHOLDER_CLIENT_ID = "00000000-0000-0000-0000-000000000001";
+
+// PostgREST corta cualquier select en 1000 filas. Un cliente con una serie
+// recurrente larga puede tener cientos de appointments; entre los ~25 de una
+// página de la lista se pasa ese tope y el conteo de servicios sale mal (bug
+// portado de Monkey a9b9018). Este helper pagina hasta agotar el resultado.
+async function fetchAllRows(table, columns, applyFilters) {
+  const PAGE = 1000;
+  const out = [];
+  for (let from = 0; ; from += PAGE) {
+    let q = supabase
+      .from(table)
+      .select(columns)
+      .range(from, from + PAGE - 1);
+    if (applyFilters) q = applyFilters(q);
+    const { data, error } = await q;
+    if (error) throw error;
+    out.push(...(data ?? []));
+    if (!data || data.length < PAGE) break;
+  }
+  return out;
+}
+
+// "Servicio prestado" en este fork = appointment no cancelado con fecha ya
+// pasada. NO se usa status='completed': nada en el fork escribe ese estado
+// (era el sync horario de Google Calendar, eliminado) — filtrar por 'completed'
+// daría 0 para todos. Contar TODAS las filas tampoco sirve: una serie
+// recurrente deja cientos de instancias futuras que después se cancelan e
+// inflan el total (bug portado de Monkey 36d63ab).
+function pastServiceFilter(q, todayIso) {
+  return q.neq("status", "cancelled").lt("scheduled_date", todayIso);
+}
+
+function todayIsoInBookingTz() {
+  const tz = process.env.BOOKING_TIMEZONE || "America/Vancouver";
+  // en-CA da YYYY-MM-DD
+  return new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(new Date());
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function parseIntSafe(v, fallback) {
@@ -128,6 +170,7 @@ export async function listClients(req, res) {
             supabase
               .from("clients_with_name")
               .select("*", { count: "exact" })
+              .neq("id", PLACEHOLDER_CLIENT_ID)
               .order("created_at", { ascending: false })
               .range(offset, offset + limit - 1),
           );
@@ -144,6 +187,7 @@ export async function listClients(req, res) {
               let q = supabase
                 .from("clients_with_name")
                 .select("id", { count: "exact", head: true })
+                .neq("id", PLACEHOLDER_CLIENT_ID)
                 .ilike("status", s);
               if (serviceType) q = q.ilike("service_type", serviceType);
               if (search) {
@@ -184,16 +228,18 @@ export async function listClients(req, res) {
       ]);
     if (listResult.error) throw listResult.error;
 
-    // ── Total services (appointment count) per client — current page only ────
+    // ── Total services per client — current page only ───────────────────────
+    // Solo servicios efectivamente prestados (no cancelados, fecha pasada) y
+    // paginado, para no truncar en 1000 ni contar instancias futuras que se
+    // van a cancelar.
     const clientIds = (listResult.data ?? []).map((c) => c.id);
     let servicesByClient = {};
     if (clientIds.length > 0) {
-      const { data: apptRows, error: apptCountErr } = await supabase
-        .from("appointments")
-        .select("client_id")
-        .in("client_id", clientIds);
-      if (apptCountErr) throw apptCountErr;
-      servicesByClient = (apptRows ?? []).reduce((acc, a) => {
+      const todayIso = todayIsoInBookingTz();
+      const apptRows = await fetchAllRows("appointments", "client_id", (q) =>
+        pastServiceFilter(q.in("client_id", clientIds), todayIso),
+      );
+      servicesByClient = apptRows.reduce((acc, a) => {
         acc[a.client_id] = (acc[a.client_id] ?? 0) + 1;
         return acc;
       }, {});
@@ -265,12 +311,16 @@ export async function getClient(req, res) {
 export async function getClientAppointments(req, res) {
   try {
     const { id } = req.params;
+    const todayIso = todayIsoInBookingTz();
 
-    // Last 10 appointments (most recent first), with team members joined
-    const { data: appointments, error: apptErr } = await supabase
-      .from("appointments")
-      .select(
-        `id,
+    // Últimos 10 servicios prestados (no cancelados, fecha pasada), más
+    // recientes primero — mismo criterio que el conteo, para no llenar el
+    // historial con instancias futuras que se van a cancelar.
+    const { data: appointments, error: apptErr } = await pastServiceFilter(
+      supabase
+        .from("appointments")
+        .select(
+          `id,
          scheduled_date,
          scheduled_start_time,
          scheduled_end_time,
@@ -289,34 +339,37 @@ export async function getClientAppointments(req, res) {
              is_team_leader
            )
          )`,
-      )
-      .eq("client_id", id)
+        )
+        .eq("client_id", id),
+      todayIso,
+    )
       .order("scheduled_date", { ascending: false })
       .limit(10);
 
     if (apptErr) throw apptErr;
 
-    // Aggregate stats: total count + total value across ALL appointments
-    const { data: allAppts, error: statsErr } = await supabase
-      .from("appointments")
-      .select("value, status")
-      .eq("client_id", id);
-
-    if (statsErr) throw statsErr;
-
-    const totalServices = allAppts?.length ?? 0;
-    const estimatedSpend = (allAppts ?? []).reduce(
-      (sum, a) => sum + (a.value ?? 0),
-      0,
+    // Stats agregados sobre servicios prestados (paginado, no truncado en 1000).
+    const pastAppts = await fetchAllRows("appointments", "value", (q) =>
+      pastServiceFilter(q.eq("client_id", id), todayIso),
     );
-    const completedCount = (allAppts ?? []).filter(
-      (a) => a.status === "completed",
-    ).length;
+
+    const totalServices = pastAppts.length;
+    const estimatedSpend = pastAppts.reduce((sum, a) => sum + (a.value ?? 0), 0);
+
+    // Reemplaza a completedCount (redundante ahora que totalServices ya solo
+    // cuenta servicios prestados): turnos no cancelados todavía por delante.
+    const { count: upcomingCount, error: upErr } = await supabase
+      .from("appointments")
+      .select("id", { count: "exact", head: true })
+      .eq("client_id", id)
+      .neq("status", "cancelled")
+      .gte("scheduled_date", todayIso);
+    if (upErr) throw upErr;
 
     return res.json({
       ok: true,
       appointments: appointments ?? [],
-      stats: { totalServices, estimatedSpend, completedCount },
+      stats: { totalServices, estimatedSpend, upcomingCount: upcomingCount ?? 0 },
     });
   } catch (e) {
     console.error("❌ getClientAppointments:", e.message);
@@ -575,28 +628,29 @@ async function computeStatusUpdates(settings) {
   const { data: clients, error: fetchErr } = await query;
   if (fetchErr) throw fetchErr;
 
-  // ── NEW: fetch the last completed appointment date per client ──────────────
-  // We pull all completed appointments and build a lookup map so we only need
-  // one extra query instead of N queries inside the loop.
+  // ── Fecha del último servicio prestado por cliente ────────────────────────
+  // "Prestado" = appointment no cancelado con fecha ya pasada. NO status=
+  // 'completed': nada en el fork escribe ese estado (era el sync de Google
+  // Calendar) — filtrar por 'completed' dejaba este mapa siempre vacío y
+  // empujaba a todos los clientes a at_risk/inactive (bug portado de Monkey
+  // a9b9018). Paginado para no truncar en 1000.
   const clientIds = clients.map((c) => c.id);
-  const { data: completedAppts, error: apptErr } = await supabase
-    .from("appointments")
-    .select("client_id, scheduled_date")
-    .in("client_id", clientIds)
-    .eq("status", "completed")
-    .order("scheduled_date", { ascending: false });
+  const todayIso = todayIsoInBookingTz();
+  const pastAppts = await fetchAllRows(
+    "appointments",
+    "client_id, scheduled_date",
+    (q) => pastServiceFilter(q.in("client_id", clientIds), todayIso),
+  );
 
-  if (apptErr) throw apptErr;
-
-  // Build map: clientId → most recent completed scheduled_date
+  // Build map: clientId → most recent past service date
   const lastCalendarActivity = {};
-  for (const appt of completedAppts ?? []) {
-    if (!lastCalendarActivity[appt.client_id]) {
-      // First occurrence is already the latest (results are ordered DESC)
+  for (const appt of pastAppts) {
+    const cur = lastCalendarActivity[appt.client_id];
+    if (!cur || appt.scheduled_date > cur) {
       lastCalendarActivity[appt.client_id] = appt.scheduled_date;
     }
   }
-  // ── END NEW ────────────────────────────────────────────────────────────────
+  // ── END ────────────────────────────────────────────────────────────────────
 
   const updates = [];
   let skipped = 0;
