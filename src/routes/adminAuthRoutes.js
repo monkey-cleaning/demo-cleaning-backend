@@ -16,6 +16,9 @@ const TEST_USERS = {
   yudith1: process.env.PASS_YUDITH1 || 'monkey2026',
   javier1: process.env.PASS_JAVIER1 || 'monkey2026',
   clara:   process.env.PASS_CLARA   || 'monkey2026',
+  // LAB418: usuario "tech" para poder distinguir en el audit trail los
+  // cambios hechos por soporte de los del equipo del cliente.
+  tech:    process.env.PASS_TECH    || 'monkey2026',
 };
 
 // POST /api/admin/auth/login

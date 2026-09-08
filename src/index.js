@@ -28,6 +28,7 @@ import dashboardRoutes from "./routes/dashboardRoutes.js";
 import appointmentRoutes from "./routes/appointmentRoutes.js";
 import scheduleRoutes from "./routes/scheduleRoutes.js";
 import settingsRoutes from "./routes/settingsRoutes.js";
+import historyRoutes from "./routes/historyRoutes.js";
 import { startEtransferSyncJob } from "./jobs/eTransferSyncJob.js";
 import {
   getTeams,
@@ -111,6 +112,7 @@ app.use("/api/admin/staff", employeeRoutes);
 app.use("/api/admin/staff", scheduleRoutes);
 app.use("/api/admin/appointments", appointmentRoutes);
 app.use("/api/admin/settings", settingsRoutes);
+app.use("/api/admin/history", historyRoutes); // LAB418 — audit trail / Activity
 app.get("/api/admin/teams", requireAdmin, getTeams);
 app.post("/api/admin/teams", requireAdmin, createTeam);
 app.patch("/api/admin/teams/:id", requireAdmin, updateTeam);

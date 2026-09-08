@@ -1,5 +1,22 @@
 // controllers/clientController.js
 import { supabase } from "../supabaseClient.js";
+import { recordEntityChange } from "../services/recordHistory.js";
+
+// LAB418 — campos de clients que se auditan en record_history.
+const AUDITED_CLIENT_FIELDS = [
+  "first_name",
+  "last_name",
+  "email",
+  "phone",
+  "mobile",
+  "default_address",
+  "status",
+  "service_type",
+  "rate",
+  "expected_frequency",
+  "postponed_until",
+  "notes",
+];
 import { syncAndPersistZohoId } from "../services/zohoService.js";
 import {
   getPendingReview,
@@ -458,6 +475,13 @@ export async function updateClient(req, res) {
 
     fields.updated_at = new Date().toISOString();
 
+    // LAB418: snapshot previo para el diff de auditoría.
+    const { data: before } = await supabase
+      .from("clients")
+      .select(AUDITED_CLIENT_FIELDS.join(","))
+      .eq("id", id)
+      .maybeSingle();
+
     const { data, error } = await supabase
       .from("clients")
       .update(fields)
@@ -468,6 +492,16 @@ export async function updateClient(req, res) {
     if (error) throw error;
     if (!data)
       return res.status(404).json({ ok: false, error: "Client not found" });
+
+    if (before) {
+      await recordEntityChange(
+        "client",
+        id,
+        before,
+        data,
+        AUDITED_CLIENT_FIELDS,
+      );
+    }
 
     console.log(`✅ Updated client: ${id}`);
     // Async Zoho sync — non-blocking

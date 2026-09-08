@@ -1,5 +1,6 @@
 import { supabase } from "../supabaseClient.js";
 import { invalidateSettingsCache } from "../services/settingsService.js";
+import { recordHistory, GLOBAL_ENTITY_ID } from "../services/recordHistory.js";
 import { loadClassificationConfig } from "../services/eventClassification.js";
 import {
   validateColorOverrides,
@@ -332,6 +333,18 @@ export async function updateSettings(req, res) {
       }
     }
 
+    // LAB418: snapshot previo de las keys que se van a tocar, para registrar en
+    // record_history solo las que REALMENTE cambian (guardar el mismo valor
+    // no genera fila).
+    const touchedKeys = entries.map(([k]) => k);
+    const { data: prevRows } = await supabase
+      .from("settings")
+      .select("key, value")
+      .in("key", touchedKeys);
+    const prevByKey = Object.fromEntries(
+      (prevRows ?? []).map((r) => [r.key, r.value]),
+    );
+
     const rows = entries.map(([key, value]) => ({
       key,
       value: String(value),
@@ -343,6 +356,17 @@ export async function updateSettings(req, res) {
       .upsert(rows, { onConflict: "key" });
 
     if (error) throw error;
+
+    const settingChanges = entries
+      .filter(([k, v]) => String(prevByKey[k] ?? "") !== String(v))
+      .map(([k, v]) => ({
+        field: k,
+        oldValue: prevByKey[k] ?? null,
+        newValue: String(v),
+      }));
+    if (settingChanges.length) {
+      await recordHistory("setting", GLOBAL_ENTITY_ID, settingChanges);
+    }
 
     // ✅ Invalidar la cache en memoria del settingsService compartido para que
     // el próximo booking, sync o assignment modal vea el valor nuevo de

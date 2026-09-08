@@ -1,4 +1,22 @@
 import { supabase } from "../supabaseClient.js";
+import { recordHistory, recordEntityChange } from "../services/recordHistory.js";
+
+// LAB418 — campos de appointments que se auditan en record_history.
+const AUDITED_APPT_FIELDS = [
+  "client_id",
+  "scheduled_date",
+  "scheduled_start_time",
+  "scheduled_end_time",
+  "starts_at",
+  "ends_at",
+  "status",
+  "property_address",
+  "service_type",
+  "special_instructions",
+  "value",
+  "estimated_hours",
+];
+const APPT_TIMESTAMP_FIELDS = new Set(["starts_at", "ends_at"]);
 
 function parseIntSafe(v, fallback) {
   const n = parseInt(v, 10);
@@ -195,19 +213,26 @@ export async function getAppointment(req, res) {
 
     const { data, error } = await supabase
       .from("appointments")
-      .select(`
-        ${APPOINTMENT_SELECT},
-        history:appointment_history (
-          id, changed_field, old_value, new_value, changed_by, changed_at, reason
-        )
-      `)
+      .select(APPOINTMENT_SELECT)
       .eq("id", id)
       .single();
 
     if (error) throw error;
     if (!data) return res.status(404).json({ ok: false, error: "Appointment not found" });
 
-    return res.json({ ok: true, appointment: normalizeAppointment(data) });
+    // LAB418: el historial ahora vive en record_history (tabla genérica), no
+    // en un embed — se trae aparte y se adjunta con el mismo shape de antes.
+    const { data: history } = await supabase
+      .from("record_history")
+      .select("id, changed_field, old_value, new_value, changed_by, changed_at, reason")
+      .eq("entity_type", "appointment")
+      .eq("entity_id", id)
+      .order("changed_at", { ascending: false });
+
+    return res.json({
+      ok: true,
+      appointment: normalizeAppointment({ ...data, history: history ?? [] }),
+    });
   } catch (e) {
     console.error("❌ getAppointment:", e.message);
     const status = e.code === "PGRST116" ? 404 : 500;
@@ -257,6 +282,10 @@ export async function createAppointment(req, res) {
       if (teamErr) throw teamErr;
     }
 
+    await recordHistory("appointment", appointment.id, [
+      { field: "created", oldValue: null, newValue: "appointment" },
+    ]);
+
     console.log(`✅ Created appointment: ${appointment.id}`);
     return res.status(201).json({ ok: true, appointment });
   } catch (e) {
@@ -279,6 +308,13 @@ export async function updateAppointment(req, res) {
     if (Object.keys(fields).length === 0 && employee_ids === undefined) {
       return res.status(400).json({ ok: false, error: "No valid fields to update" });
     }
+
+    // Snapshot previo para el diff de auditoría (LAB418).
+    const { data: before } = await supabase
+      .from("appointments")
+      .select(AUDITED_APPT_FIELDS.join(","))
+      .eq("id", id)
+      .maybeSingle();
 
     if (Object.keys(fields).length > 0) {
       fields.updated_at = new Date().toISOString();
@@ -323,6 +359,24 @@ export async function updateAppointment(req, res) {
     if (fetchErr) throw fetchErr;
     if (!data) return res.status(404).json({ ok: false, error: "Appointment not found" });
 
+    // Auditoría: diff de campos + cambio de equipo (LAB418).
+    if (before) {
+      await recordEntityChange("appointment", id, before, data, AUDITED_APPT_FIELDS, {
+        timestampFields: APPT_TIMESTAMP_FIELDS,
+      });
+    }
+    if (Array.isArray(employee_ids)) {
+      await recordHistory("appointment", id, [
+        {
+          field: "team",
+          oldValue: null,
+          newValue: employee_ids.length
+            ? `${employee_ids.length} cleaner(s) assigned`
+            : "team cleared",
+        },
+      ]);
+    }
+
     console.log(`✅ Updated appointment: ${id}`);
     return res.json({ ok: true, appointment: normalizeAppointment(data) });
   } catch (e) {
@@ -334,11 +388,18 @@ export async function updateAppointment(req, res) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DELETE /api/admin/appointments/:id
-// Hard delete — cascade removes appointment_teams and appointment_history
+// Hard delete — cascade removes appointment_teams.
 // ─────────────────────────────────────────────────────────────────────────────
 export async function deleteAppointment(req, res) {
   try {
     const { id } = req.params;
+
+    // LAB418: registrá el borrado ANTES de que la fila desaparezca. Va a
+    // record_history, que no tiene FK a appointments, así que la fila de
+    // historial sobrevive al delete.
+    await recordHistory("appointment", id, [
+      { field: "deleted", oldValue: "appointment", newValue: null },
+    ]);
 
     const { error } = await supabase
       .from("appointments")
