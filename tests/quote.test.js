@@ -1,7 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 
 import { computeQuoteResponse } from "../src/services/quoteMapping.js";
+import { verifyElevenLabsSignature } from "../src/utils/elevenLabsSignature.js";
 
 // Valores esperados calculados contra cleaningQuoteCalculator.js de ESTE fork
 // (HOURLY_RATE 45, HOURLY_RATE_MOVE_IN_OUT 50, MIN_HOURS 3, TEAM_SIZE 2,
@@ -100,4 +102,61 @@ test("invalid optional field is ignored, not fatal", () => {
   });
   assert.equal(httpStatus, 200);
   assert.equal(payload.estimated_labor_hours, 6); // no area bonus, no fridge
+});
+
+// ── verifyElevenLabsSignature ──────────────────────────────────────────────
+
+function sign(body, secret, timestamp) {
+  const mac = crypto
+    .createHmac("sha256", secret)
+    .update(`${timestamp}.${body}`)
+    .digest("hex");
+  return `t=${timestamp},v0=${mac}`;
+}
+
+test("valid signature passes", () => {
+  const secret = "wsec_test_abc";
+  const raw = JSON.stringify({ type: "post_call_transcription", data: {} });
+  const ts = Math.floor(Date.now() / 1000);
+  const res = verifyElevenLabsSignature({
+    rawBody: Buffer.from(raw),
+    signatureHeader: sign(raw, secret, ts),
+    secret,
+  });
+  assert.equal(res.ok, true);
+});
+
+test("tampered body fails", () => {
+  const secret = "wsec_test_abc";
+  const ts = Math.floor(Date.now() / 1000);
+  const header = sign(JSON.stringify({ a: 1 }), secret, ts);
+  const res = verifyElevenLabsSignature({
+    rawBody: JSON.stringify({ a: 2 }),
+    signatureHeader: header,
+    secret,
+  });
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, "signature mismatch");
+});
+
+test("stale timestamp fails", () => {
+  const secret = "wsec_test_abc";
+  const raw = "{}";
+  const ts = Math.floor(Date.now() / 1000) - 60 * 60; // 1h old
+  const res = verifyElevenLabsSignature({
+    rawBody: raw,
+    signatureHeader: sign(raw, secret, ts),
+    secret,
+  });
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, "timestamp outside tolerance");
+});
+
+test("missing secret fails closed", () => {
+  const res = verifyElevenLabsSignature({
+    rawBody: "{}",
+    signatureHeader: "t=1,v0=abc",
+    secret: undefined,
+  });
+  assert.equal(res.ok, false);
 });

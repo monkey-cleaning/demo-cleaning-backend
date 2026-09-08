@@ -309,3 +309,93 @@ export async function sendLeadEmailFailureAlert({ lead, error }) {
     "LeadEmailFailureAlert",
   );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers y senders portados de Monkey Cleaning (LAB290/LAB419/LAB413/LAB425 +
+// SMS webhooks). Todos siguen la misma regla: si no hay destinatario o falta el
+// transporter, loguean y salen — una notificación nunca rompe lo que la disparó.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const BRAND = process.env.BRAND_NAME || "Demo Cleaning Co.";
+
+// Lista de destinatarios de una alerta de ops: el setting `ops_alert_email`
+// (uno o varios separados por coma) + una env var opcional de "extras" para
+// sumar gente sin tocar el setting ni el código. Deduplicada.
+async function opsRecipients({ extraEnvKey } = {}) {
+  const settings = await getRawSettings().catch(() => ({}));
+  const fromSetting = String(settings.ops_alert_email || "")
+    .split(",")
+    .map((e) => e.trim())
+    .filter(Boolean);
+  const fromEnv = extraEnvKey
+    ? String(process.env[extraEnvKey] || "")
+        .split(",")
+        .map((e) => e.trim())
+        .filter(Boolean)
+    : [];
+  return [...new Set([...fromSetting, ...fromEnv])];
+}
+
+async function sendOpsEmail({ recipients, subject, bodyHtml, label }) {
+  if (!recipients?.length) {
+    console.warn(
+      `[OpsNotif] ${label}: sin destinatarios (ops_alert_email vacío) — se salta.`,
+    );
+    return;
+  }
+  const transporter = getTransporter();
+  if (!transporter) return;
+  await sendWithRetry(
+    transporter,
+    {
+      from: `"${BRAND}" <${process.env.GMAIL_USER}>`,
+      to: recipients.join(", "),
+      subject,
+      html: emailWrapper(bodyHtml),
+    },
+    label,
+  );
+}
+
+/**
+ * Post-call de ElevenLabs: el que llamó pidió reservar o la llamada se escaló
+ * a un humano. Portado de Monkey LAB290 (sendOpsVoiceBookingAlert).
+ *
+ * @param {{ conversationId?: string, fromPhone?: string, callbackNumber?: string,
+ *   callerName?: string, status?: string, escalationReason?: string,
+ *   quote?: { total?: any, hours?: any, frequency?: any, bedrooms?: any, fullBathrooms?: any },
+ *   summary?: string, notes?: string, leadId?: string|null }} p
+ */
+export async function sendOpsVoiceBookingAlert(p = {}) {
+  const recipients = await opsRecipients();
+  const escalated = p.status === "escalated";
+  const who = p.callerName?.trim() || "Unknown caller";
+  const phone = p.callbackNumber || p.fromPhone || "—";
+  const q = p.quote || {};
+
+  const bodyHtml = `
+    <p style="margin:0 0 4px;font-size:11px;font-weight:700;color:${escalated ? "#e11d48" : "#0b8043"};letter-spacing:1px;text-transform:uppercase;">
+      ${escalated ? "Escalated to a human" : "Caller wants to book"}
+    </p>
+    <h1 style="margin:0 0 4px;font-size:20px;color:#0d1b3e;">${escapeHtml(who)}</h1>
+    <p style="margin:0 0 16px;font-size:14px;color:#64748b;">
+      A phone quote call ${escalated ? "was escalated" : "ended with a booking request"}.
+      Please follow up.
+    </p>
+    <table width="100%" cellpadding="0" cellspacing="0">
+      <tr><td style="padding:6px 0;font-size:13px;color:#334155;"><b>Call back:</b> ${escapeHtml(String(phone))}</td></tr>
+      ${p.escalationReason ? `<tr><td style="padding:6px 0;font-size:13px;color:#e11d48;"><b>Reason:</b> ${escapeHtml(p.escalationReason)}</td></tr>` : ""}
+      ${q.total ? `<tr><td style="padding:6px 0;font-size:13px;color:#334155;"><b>Quote:</b> $${escapeHtml(String(q.total))} CAD · ${escapeHtml(String(q.hours ?? "?"))}h · ${escapeHtml(String(q.frequency ?? ""))} ${escapeHtml(String(q.bedrooms ?? ""))} ${escapeHtml(String(q.fullBathrooms ?? ""))}</td></tr>` : ""}
+      ${p.notes ? `<tr><td style="padding:6px 0;font-size:13px;color:#334155;"><b>Notes:</b> ${escapeHtml(p.notes)}</td></tr>` : ""}
+      ${p.summary ? `<tr><td style="padding:6px 0;font-size:13px;color:#64748b;"><b>Summary:</b> ${escapeHtml(p.summary)}</td></tr>` : ""}
+      <tr><td style="padding:6px 0;font-size:11px;color:#94a3b8;">conversation ${escapeHtml(String(p.conversationId || "?"))}${p.leadId ? ` · voice_lead ${escapeHtml(String(p.leadId))}` : ""}</td></tr>
+    </table>
+  `;
+
+  await sendOpsEmail({
+    recipients,
+    subject: `${escalated ? "☎️ Escalated" : "☎️ Booking request"} — ${who} (${phone})`,
+    bodyHtml,
+    label: "OpsVoiceBookingAlert",
+  });
+}

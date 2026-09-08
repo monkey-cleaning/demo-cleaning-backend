@@ -59,7 +59,15 @@ app.use(
     credentials: true,
   }),
 );
-app.use(express.json());
+// req.rawBody: lo necesita la verificación HMAC del post-call webhook de
+// ElevenLabs (firma sobre los bytes crudos, no sobre el JSON re-serializado).
+app.use(
+  express.json({
+    verify: (req, _res, buf) => {
+      req.rawBody = buf;
+    },
+  }),
+);
 
 // ── No cachear respuestas de la API ──────────────────────────────────────────
 // El panel admin trabaja siempre con datos vivos. Sin esto, el browser puede
