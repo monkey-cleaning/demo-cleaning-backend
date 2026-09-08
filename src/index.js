@@ -68,6 +68,8 @@ app.use(
     },
   }),
 );
+// Twilio (webhooks SMS) y el form de la encuesta postean form-urlencoded.
+app.use(express.urlencoded({ extended: false }));
 
 // ── No cachear respuestas de la API ──────────────────────────────────────────
 // El panel admin trabaja siempre con datos vivos. Sin esto, el browser puede
@@ -85,6 +87,14 @@ app.use("/api/blogs", blogRoutes);
 
 // ── Quote (Twilio integration) ────────────────────────────────────────────
 app.use("/api/quote", quoteRoutes);
+
+// ── SMS webhooks de Twilio (respuestas entrantes + status de entrega) ─────────
+// Portado de Monkey. Comentado hasta configurar los webhooks en Twilio:
+// apuntar "A MESSAGE COMES IN" a POST /api/sms/incoming y el status callback a
+// POST /api/sms/status, y setear SMS_STATUS_CALLBACK_URL (o PUBLIC_BACKEND_URL).
+// La auth es la firma X-Twilio-Signature; sin TWILIO_AUTH_TOKEN se rechaza 403.
+// import smsWebhookRoutes from "./routes/smsWebhookRoutes.js";
+// app.use("/api/sms", smsWebhookRoutes);
 
 // ── Admin ────────────────────────────────────────────────────────────────────
 app.use("/api/admin/auth", adminAuthRoutes);

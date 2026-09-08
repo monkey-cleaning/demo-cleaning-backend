@@ -399,3 +399,104 @@ export async function sendOpsVoiceBookingAlert(p = {}) {
     label: "OpsVoiceBookingAlert",
   });
 }
+
+function fmtApptContext(appointment) {
+  if (!appointment?.starts_at) return "";
+  const dt = DateTime.fromISO(appointment.starts_at, {
+    zone: appointment.timezone || TZ,
+  });
+  const when = dt.isValid ? dt.toFormat("cccc, LLLL d 'at' h:mm a") : null;
+  const addr = appointment.property_address
+    ? ` · ${escapeHtml(appointment.property_address.split(",")[0])}`
+    : "";
+  return when
+    ? `<p style="margin:6px 0 0;font-size:13px;color:#64748b;">Nearest appointment: ${when}${addr} (${escapeHtml(appointment.status || "?")})</p>`
+    : "";
+}
+
+/**
+ * Un cliente respondió al número de recordatorios SMS. Portado de Monkey.
+ * @param {{ from?: string, body?: string, receivedAt?: string, client?: object|null, appointment?: object|null }} p
+ */
+export async function sendOpsInboundSmsAlert({
+  from,
+  body,
+  receivedAt,
+  client,
+  appointment,
+}) {
+  const recipients = await opsRecipients();
+  const clientName = client
+    ? `${client.first_name || ""} ${client.last_name || ""}`.trim() ||
+      "Unknown client"
+    : "Unknown number";
+  const when = receivedAt
+    ? DateTime.fromISO(receivedAt, { zone: TZ }).toFormat("LLLL d, h:mm a")
+    : DateTime.now().setZone(TZ).toFormat("LLLL d, h:mm a");
+  const idLine = client
+    ? `${client.email ? escapeHtml(client.email) : "no email on file"}${client.id ? ` · client_id ${escapeHtml(client.id)}` : ""}`
+    : "This number is not matched to any client in the database.";
+
+  const bodyHtml = `
+    <p style="margin:0 0 4px;font-size:11px;font-weight:700;color:#2563eb;letter-spacing:1px;text-transform:uppercase;">Client replied by SMS</p>
+    <h1 style="margin:0 0 4px;font-size:20px;color:#0d1b3e;">${escapeHtml(clientName)}</h1>
+    <p style="margin:0 0 2px;font-size:13px;color:#64748b;">${escapeHtml(from || "unknown number")} · received ${when}</p>
+    <p style="margin:0 0 16px;font-size:13px;color:#64748b;">${idLine}</p>
+    <table width="100%" cellpadding="0" cellspacing="0">
+      <tr><td style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:16px 20px;">
+        <p style="margin:0;font-size:14px;color:#0d1b3e;white-space:pre-wrap;">${escapeHtml((body || "").trim() || "(empty message / media only)")}</p>
+      </td></tr>
+    </table>
+    ${fmtApptContext(appointment)}
+    <p style="margin:16px 0 0;font-size:12px;color:#94a3b8;">
+      The reminder number does not receive replies — reach out to the client by
+      email or phone if this needs an answer.
+    </p>
+  `;
+
+  await sendOpsEmail({
+    recipients,
+    subject: `SMS reply from ${clientName}`,
+    bodyHtml,
+    label: "InboundSmsAlert",
+  });
+}
+
+/**
+ * Twilio reportó que un recordatorio no llegó. Portado de Monkey.
+ * @param {{ phone?: string, deliveryStatus?: string, errorCode?: string|null, client?: object|null, appointment?: object|null }} p
+ */
+export async function sendOpsSmsDeliveryFailureAlert({
+  phone,
+  deliveryStatus,
+  errorCode,
+  client,
+  appointment,
+}) {
+  const recipients = await opsRecipients();
+  const clientName = client
+    ? `${client.first_name || ""} ${client.last_name || ""}`.trim() ||
+      "Unknown client"
+    : "Unknown client";
+
+  const bodyHtml = `
+    <p style="margin:0 0 4px;font-size:11px;font-weight:700;color:#e11d48;letter-spacing:1px;text-transform:uppercase;">Reminder SMS not delivered</p>
+    <h1 style="margin:0 0 4px;font-size:20px;color:#0d1b3e;">${escapeHtml(clientName)}</h1>
+    <p style="margin:0 0 16px;font-size:13px;color:#64748b;">
+      ${escapeHtml(phone || "unknown number")} · Twilio status: <b>${escapeHtml(deliveryStatus)}</b>${errorCode ? ` · error ${escapeHtml(String(errorCode))}` : ""}
+    </p>
+    <p style="margin:0 0 8px;font-size:14px;color:#334155;">
+      The tomorrow-reminder text for this client did not reach the phone. If the
+      appointment stands, confirm with them another way.
+    </p>
+    ${fmtApptContext(appointment)}
+    ${errorCode ? `<p style="margin:12px 0 0;font-size:12px;color:#94a3b8;">Twilio error ${escapeHtml(String(errorCode))} — look it up at twilio.com/docs/api/errors/${escapeHtml(String(errorCode))}</p>` : ""}
+  `;
+
+  await sendOpsEmail({
+    recipients,
+    subject: `Reminder SMS ${deliveryStatus}: ${clientName}`,
+    bodyHtml,
+    label: "SmsDeliveryFailureAlert",
+  });
+}
