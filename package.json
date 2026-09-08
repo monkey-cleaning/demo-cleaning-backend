@@ -5,7 +5,7 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "test": "node --test tests/**/*.test.js",
+    "test": "node --test",
     "dev": "node src/index.js",
     "start": "node src/index.js"
   },

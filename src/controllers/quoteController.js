@@ -1,69 +1,46 @@
 import { calculateQuote } from "../services/cleaningQuoteCalculator.js";
+import { computeQuoteResponse } from "../services/quoteMapping.js";
 import { supabase } from "../services/supabaseService.js";
 
 const WEBHOOK_TOKEN = process.env.ELEVENLABS_WEBHOOK_TOKEN;
 
-const FREQUENCY_MAP = {
-  Weekly: "Weekly",
-  Biweekly: "Biweekly",
-  "Bi-weekly": "Biweekly",
-  Monthly: "Monthly",
-  "One Time Cleaning": "One Time Cleaning",
-  "Move In/Out": "One Time Cleaning",
-  "Move In/Move Out": "One Time Cleaning",
-};
-
-function normalizeFrequency(freq) {
-  const key = String(freq || "").trim();
-  return FREQUENCY_MAP[key] || key;
-}
-
-const REQUIRED_FIELDS = ["cleaning_frequency", "bedrooms", "full_bathrooms"];
-
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/quote/calculate
+// Tool webhook del agente de ElevenLabs (cotización en vivo). Solo calcula: no
+// toca la BD ni manda mails. La validación/mapeo vive en services/quoteMapping.js.
+//
+// Antes esta función leía result.tier / result.ratePerHour / result.totalLaborHours
+// / result.clockHoursForTwoPeople — campos que cleaningQuoteCalculator.js NUNCA
+// devolvió (devuelve calcType / hourlyRate / totalHrs / hrsPerPerson / totalAmount),
+// así que el agente recibía undefined para todo salvo el total. Portado de
+// Monkey Cleaning (LAB290) que arregló exactamente este bug.
+// ─────────────────────────────────────────────────────────────────────────────
 export async function calculateQuoteEndpoint(req, res) {
   try {
     const auth = req.get("authorization") || req.get("Authorization") || "";
     const ok = WEBHOOK_TOKEN && auth.trim() === `Bearer ${WEBHOOK_TOKEN}`;
     if (!ok) return res.status(401).json({ error: "Unauthorized" });
 
-    const body = req.body || {};
-
-    const missing = REQUIRED_FIELDS.filter(
-      (f) => body[f] === undefined || body[f] === null || body[f] === "",
+    const { httpStatus, payload, lead, result } = computeQuoteResponse(
+      req.body || {},
     );
-    if (missing.length > 0) {
-      return res
-        .status(400)
-        .json({ error: `${missing.join(", ")} is required` });
+
+    if (httpStatus === 200) {
+      console.log(
+        `[QUOTE] ${new Date().toISOString()} | ${lead.cleaningFrequency} | ${lead.bedrooms} | ${lead.fullBathrooms} | $${result.totalAmount} CAD @ $${result.hourlyRate}/h | ${result.totalHrs}h`,
+      );
+    } else {
+      console.warn(
+        `[QUOTE] ${httpStatus} ${payload.code || ""} ${payload.error || ""}`,
+      );
     }
 
-    const lead = {
-      cleaningFrequency: normalizeFrequency(body.cleaning_frequency),
-      bedrooms: body.bedrooms,
-      fullBathrooms: body.full_bathrooms,
-      halfBathrooms: body.half_bathrooms,
-      propertySize: body.property_size,
-      insideFridge: body.inside_fridge,
-      insideFreezer: body.inside_freezer,
-      insideOven: body.inside_oven,
-    };
-
-    const result = calculateQuote(lead);
-
-    console.log(
-      `[QUOTE] ${new Date().toISOString()} | Frequency: ${lead.cleaningFrequency} | Bedrooms: ${lead.bedrooms} | Result: $${result.totalAmount} CAD`,
-    );
-
-    return res.status(200).json({
-      calc_type: result.tier,
-      hourly_rate_cad: result.ratePerHour,
-      total_labor_hours: result.totalLaborHours,
-      clock_hours_for_two_people: result.clockHoursForTwoPeople,
-      estimated_total_cad: result.totalAmount,
-    });
+    return res.status(httpStatus).json(payload);
   } catch (e) {
     console.error("[QUOTE] error:", e);
-    return res.status(500).json({ error: "Internal error calculating quote" });
+    return res
+      .status(500)
+      .json({ error: "Internal error calculating quote", code: "INTERNAL" });
   }
 }
 
