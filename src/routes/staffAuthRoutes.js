@@ -21,17 +21,39 @@ const router = express.Router();
 // no haber corrido todavía según el orden de imports de index.js).
 
 // ── Cuentas de cleaners ────────────────────────────────────────────────────
-// Agregar una entrada por cleaner + su PASS_CLEANER_<NOMBRE> en .env. Sin la
-// env var, esa cuenta no matchea ningún password real y el login falla — que
-// es preferible a loguear con un fallback conocido.
+// Una entrada por cleaner activo (tabla `employees`). El `email` DEBE coincidir
+// con employees.email — es lo que usa el backend para resolver el employee.
 //
-// Rellenar con los cleaners reales de la demo antes de habilitar el portal.
+// Password: PASS_CLEANER_<NOMBRE> en .env. El fallback "demo2026" es solo para
+// la demo local (mismo criterio que TEST_USERS en adminAuthRoutes.js) — en un
+// deploy real, setear las env vars y borrar el fallback.
+const CLEANER_DEMO_PASSWORD = "demo2026";
+
 const CLEANER_USERS = {
-  // ejemplo — reemplazar/completar:
-  // maria: {
-  //   password: process.env.PASS_CLEANER_MARIA,
-  //   email: "maria@example.com", // debe matchear employees.email
-  // },
+  ana: {
+    password: process.env.PASS_CLEANER_ANA || CLEANER_DEMO_PASSWORD,
+    email: "ana.torres@demo-cleaning.co",
+  },
+  bruno: {
+    password: process.env.PASS_CLEANER_BRUNO || CLEANER_DEMO_PASSWORD,
+    email: "bruno.silva@demo-cleaning.co",
+  },
+  carla: {
+    password: process.env.PASS_CLEANER_CARLA || CLEANER_DEMO_PASSWORD,
+    email: "carla.nunez@demo-cleaning.co",
+  },
+  diego: {
+    password: process.env.PASS_CLEANER_DIEGO || CLEANER_DEMO_PASSWORD,
+    email: "diego.ramos@demo-cleaning.co",
+  },
+  elena: {
+    password: process.env.PASS_CLEANER_ELENA || CLEANER_DEMO_PASSWORD,
+    email: "elena.vega@demo-cleaning.co",
+  },
+  franco: {
+    password: process.env.PASS_CLEANER_FRANCO || CLEANER_DEMO_PASSWORD,
+    email: "franco.molina@demo-cleaning.co",
+  },
 };
 
 // POST /api/staff/auth/login   Body: { username, password }
