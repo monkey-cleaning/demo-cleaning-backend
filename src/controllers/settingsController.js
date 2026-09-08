@@ -24,6 +24,7 @@ const PUBLIC_KEYS = [
   "ops_alert_email",
   "confirmation_reminder_days_before",
   "confirmation_pairing_grace_minutes",
+  "google_review_url",
   ...SPECIAL_COLOR_SETTING_KEYS,
 ];
 
@@ -61,6 +62,7 @@ export async function getSettings(req, res) {
       ops_alert_email: "",
       confirmation_reminder_days_before: "2",
       confirmation_pairing_grace_minutes: "60",
+      google_review_url: "",
       // Defaults en línea con los fallbacks de eventClassification.js —
       // si nunca se guardaron en `settings`, ambos módulos coinciden igual.
       confirmar_color_id: "5",
@@ -151,6 +153,14 @@ export async function updateSettings(req, res) {
         return res.status(400).json({
           ok: false,
           error: `"${k}" must be a valid Google Calendar colorId (1-11), got: ${v}`,
+        });
+      }
+
+      // LAB413: opcional, pero si viene tiene que ser una URL http(s).
+      if (k === "google_review_url" && v && !/^https?:\/\/.+/i.test(v)) {
+        return res.status(400).json({
+          ok: false,
+          error: `"google_review_url" must be an http(s) URL or empty, got: ${v}`,
         });
       }
 

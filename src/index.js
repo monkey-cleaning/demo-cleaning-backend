@@ -19,6 +19,8 @@ import paymentRoutes from "./routes/paymentRoutes.js";
 // import "./jobs/syncQuickbooks.js";
 import calendarRoutes from "./routes/calendarRoutes.js";
 import publicConfirmationRoutes from "./routes/publicConfirmationRoutes.js";
+import publicSurveyRoutes from "./routes/publicSurveyRoutes.js";
+import { startSurveyRequestJob } from "./jobs/surveyRequestJob.js";
 import clientRoutes from "./routes/clientRoutes.js";
 import { startClientStatusJob } from "./jobs/clientStatusJob.js";
 import employeeRoutes from "./routes/employeeRoutes.js";
@@ -129,6 +131,9 @@ app.use("/api/calendar", calendarRoutes);
 // Confirmation links clicked by clients from the "CONFIRMAR" reminder email —
 // see controllers/publicConfirmationController.js.
 app.use("/api/public", publicConfirmationRoutes);
+// Encuesta de satisfacción post-servicio (LAB413 — rating + feedback). Páginas
+// HTML sin auth; los links llegan por email. Inerte hasta SURVEY_EMAILS_ENABLED.
+app.use("/api/public", publicSurveyRoutes);
 
 // ── Healthcheck ──────────────────────────────────────────────────────────────
 app.get("/health", (_req, res) => {
@@ -156,6 +161,10 @@ startDailyDigestJob();
 // startConfirmationPairingJob();
 // startConfirmationReminderJob();
 // startConfirmationReleaseJob();
+// LAB413: encuesta de satisfacción — DESACTIVADO hasta aprobar los copys.
+// Para activar: setear SURVEY_EMAILS_ENABLED=true, PUBLIC_BACKEND_URL y
+// google_review_url (setting o env), y descomentar la línea de abajo.
+// startSurveyRequestJob();
 
 // 07:50 AM Vancouver — da 10 min de margen antes de la ventana de las 8:00
 // Expresión en UTC: Vancouver es UTC-7 (PDT) / UTC-8 (PST)

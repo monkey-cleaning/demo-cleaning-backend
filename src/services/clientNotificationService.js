@@ -245,3 +245,190 @@ export async function sendConfirmationRequestEmail(client, slots) {
     "ConfirmationRequest",
   );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Encuesta de satisfacción post-servicio (portado de Monkey Cleaning LAB413).
+//
+// Tres emails al cliente:
+//   1. sendSurveyRequestEmail        — "puntuá tu limpieza 1–5" (lo manda el job)
+//   2. sendSurveyReviewThankYouEmail — puntuó 5 → pedir review público en Google
+//   3. sendSurveyFeedbackThankYouEmail — puntuó 1–4 → preguntar qué mejorar
+//
+// SEGURIDAD: todo acá está detrás de SURVEY_EMAILS_ENABLED (default off) — el
+// interruptor pedido. Sin "true" no se envía nada. SURVEY_TEST_EMAIL redirige
+// todos los mails de encuesta a esa casilla para revisar los copys sin tocar
+// clientes reales.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SURVEY_BRAND = process.env.BRAND_NAME || "Demo Cleaning Co.";
+
+function surveyEmailsEnabled(label) {
+  if (process.env.SURVEY_EMAILS_ENABLED === "true") return true;
+  console.warn(
+    `[ClientNotif] ${label} SKIPPED — SURVEY_EMAILS_ENABLED is not "true". No survey email sent.`,
+  );
+  return false;
+}
+
+function surveyRecipient(clientEmail) {
+  const testTo = (process.env.SURVEY_TEST_EMAIL || "").trim();
+  return testTo || clientEmail;
+}
+
+function surveyLink(token, suffix) {
+  const base = (process.env.PUBLIC_BACKEND_URL || "").replace(/\/$/, "");
+  if (!base) {
+    console.warn(
+      "[ClientNotif] PUBLIC_BACKEND_URL no está seteada en .env — el link de la encuesta va a quedar roto.",
+    );
+  }
+  return `${base}/api/public/survey/${token}${suffix}`;
+}
+
+function ratingButtonsHtml(token) {
+  const cells = [1, 2, 3, 4, 5]
+    .map(
+      (n) => `
+        <td style="padding:0 4px;">
+          <a href="${surveyLink(token, `/${n}`)}"
+             style="display:block;width:44px;line-height:44px;text-align:center;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:8px;color:#0d1b3e;font-size:17px;font-weight:700;text-decoration:none;">
+            ${n}
+          </a>
+        </td>`,
+    )
+    .join("");
+  return `
+    <table cellpadding="0" cellspacing="0" role="presentation" style="margin:8px 0 4px;">
+      <tr>${cells}</tr>
+    </table>
+    <p style="margin:4px 0 0;font-size:12px;color:#94a3b8;">1 = not happy · 5 = loved it</p>`;
+}
+
+/**
+ * @param {{ name?: string, email: string }} client
+ * @param {string} token  clients.survey_token
+ * @returns {Promise<boolean>} true solo si el email se entregó de verdad
+ */
+export async function sendSurveyRequestEmail(client, token) {
+  if (!surveyEmailsEnabled("sendSurveyRequestEmail")) return false;
+  if (!client?.email) {
+    console.warn(
+      "[ClientNotif] sendSurveyRequestEmail: cliente sin email, se salta.",
+    );
+    return false;
+  }
+  const transporter = getTransporter();
+  if (!transporter) return false;
+
+  const bodyHtml = `
+    <p style="margin:0 0 4px;font-size:11px;font-weight:700;color:#0b8043;letter-spacing:1px;text-transform:uppercase;">Your feedback</p>
+    <h1 style="margin:0 0 4px;font-size:22px;color:#0d1b3e;">How did we do, ${escapeHtml(client.name || "there")}? ✨</h1>
+    <p style="margin:0 0 12px;font-size:14px;color:#64748b;">
+      Thanks for choosing ${escapeHtml(SURVEY_BRAND)}. On a scale of 1 to 5, how would you rate your recent cleaning? Just tap a number:
+    </p>
+    ${ratingButtonsHtml(token)}
+    <p style="margin:18px 0 0;font-size:12px;color:#94a3b8;">It takes one tap and helps us keep improving.</p>
+  `;
+
+  return await sendWithRetry(
+    transporter,
+    {
+      from: `"${SURVEY_BRAND}" <${process.env.GMAIL_USER}>`,
+      to: surveyRecipient(client.email),
+      subject: "How did we do? ✨",
+      html: emailWrapper(bodyHtml),
+      attachments: logoAttachments(),
+    },
+    "SurveyRequest",
+  );
+}
+
+/**
+ * Puntuó 5 → agradecer y pedir un review público en Google. Fire-and-forget
+ * desde el endpoint público de rating.
+ * @param {{ name?: string, email: string }} client
+ * @param {string} reviewUrl  link de Google Reviews (settingsService.getGoogleReviewUrl)
+ */
+export async function sendSurveyReviewThankYouEmail(client, reviewUrl) {
+  if (!surveyEmailsEnabled("sendSurveyReviewThankYouEmail")) return false;
+  if (!client?.email) return false;
+  if (!reviewUrl) {
+    console.warn(
+      "[ClientNotif] sendSurveyReviewThankYouEmail: sin google_review_url configurado — se salta.",
+    );
+    return false;
+  }
+  const transporter = getTransporter();
+  if (!transporter) return false;
+
+  const bodyHtml = `
+    <p style="margin:0 0 4px;font-size:11px;font-weight:700;color:#0b8043;letter-spacing:1px;text-transform:uppercase;">Thank you</p>
+    <h1 style="margin:0 0 4px;font-size:22px;color:#0d1b3e;">You made our day, ${escapeHtml(client.name || "there")}! 🎉</h1>
+    <p style="margin:0 0 16px;font-size:14px;color:#64748b;">
+      We're so glad you loved your cleaning. If you have a moment, a quick Google review means the world to a small local team like ours:
+    </p>
+    <table cellpadding="0" cellspacing="0" role="presentation">
+      <tr><td style="background:#0b8043;border-radius:8px;">
+        <a href="${escapeHtml(reviewUrl)}"
+           style="display:inline-block;padding:12px 22px;color:#ffffff;font-size:14px;font-weight:700;text-decoration:none;">
+          Leave a Google review
+        </a>
+      </td></tr>
+    </table>
+    <p style="margin:18px 0 0;font-size:12px;color:#94a3b8;">Thank you for supporting ${escapeHtml(SURVEY_BRAND)} 💚</p>
+  `;
+
+  return await sendWithRetry(
+    transporter,
+    {
+      from: `"${SURVEY_BRAND}" <${process.env.GMAIL_USER}>`,
+      to: surveyRecipient(client.email),
+      subject: "Thank you! Would you share it on Google?",
+      html: emailWrapper(bodyHtml),
+      attachments: logoAttachments(),
+    },
+    "SurveyReviewThankYou",
+  );
+}
+
+/**
+ * Puntuó 1–4 → agradecer y pedir detalle de qué mejorar. Linkea al mismo form
+ * de feedback que muestra la landing. SIN link de Google Reviews.
+ * @param {{ name?: string, email: string }} client
+ * @param {string} token  clients.survey_token
+ */
+export async function sendSurveyFeedbackThankYouEmail(client, token) {
+  if (!surveyEmailsEnabled("sendSurveyFeedbackThankYouEmail")) return false;
+  if (!client?.email) return false;
+  const transporter = getTransporter();
+  if (!transporter) return false;
+
+  const bodyHtml = `
+    <p style="margin:0 0 4px;font-size:11px;font-weight:700;color:#0b8043;letter-spacing:1px;text-transform:uppercase;">Thank you</p>
+    <h1 style="margin:0 0 4px;font-size:22px;color:#0d1b3e;">Thanks for the honest feedback, ${escapeHtml(client.name || "there")}</h1>
+    <p style="margin:0 0 16px;font-size:14px;color:#64748b;">
+      We'd really like to get it right for you. Could you tell us a bit more about what we could have done better?
+    </p>
+    <table cellpadding="0" cellspacing="0" role="presentation">
+      <tr><td style="background:#0d1b3e;border-radius:8px;">
+        <a href="${surveyLink(token, "/feedback")}"
+           style="display:inline-block;padding:12px 22px;color:#ffffff;font-size:14px;font-weight:700;text-decoration:none;">
+          Tell us what to improve
+        </a>
+      </td></tr>
+    </table>
+    <p style="margin:18px 0 0;font-size:12px;color:#94a3b8;">You can also just reply to this email — a real person reads it.</p>
+  `;
+
+  return await sendWithRetry(
+    transporter,
+    {
+      from: `"${SURVEY_BRAND}" <${process.env.GMAIL_USER}>`,
+      to: surveyRecipient(client.email),
+      subject: "Thank you — how can we do better?",
+      html: emailWrapper(bodyHtml),
+      attachments: logoAttachments(),
+    },
+    "SurveyFeedbackThankYou",
+  );
+}

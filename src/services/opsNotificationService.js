@@ -500,3 +500,35 @@ export async function sendOpsSmsDeliveryFailureAlert({
     label: "SmsDeliveryFailureAlert",
   });
 }
+
+/**
+ * LAB413 — un cliente dejó feedback de la encuesta (puntuó 1–4). Portado de Monkey.
+ * @param {{ client?: { id?: string, name?: string, email?: string }, rating?: number|null, feedback?: string }} p
+ */
+export async function sendSurveyFeedbackAlert({ client, rating, feedback }) {
+  if (!feedback?.trim()) return;
+  const recipients = await opsRecipients();
+  const clientName = client?.name?.trim() || "Unknown client";
+  const ratingLabel = rating != null ? `${rating}/5` : "not rated";
+
+  const bodyHtml = `
+    <p style="margin:0 0 4px;font-size:11px;font-weight:700;color:#e11d48;letter-spacing:1px;text-transform:uppercase;">Survey feedback — needs review</p>
+    <h1 style="margin:0 0 4px;font-size:20px;color:#0d1b3e;">${escapeHtml(clientName)} rated us ${escapeHtml(ratingLabel)}</h1>
+    <p style="margin:0 0 16px;font-size:13px;color:#64748b;">
+      ${client?.email ? escapeHtml(client.email) : "no email on file"}${client?.id ? ` · client_id ${escapeHtml(client.id)}` : ""}
+    </p>
+    <table width="100%" cellpadding="0" cellspacing="0">
+      <tr><td style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:16px 20px;">
+        <p style="margin:0;font-size:14px;color:#0d1b3e;white-space:pre-wrap;">${escapeHtml(feedback.trim())}</p>
+      </td></tr>
+    </table>
+    <p style="margin:16px 0 0;font-size:12px;color:#94a3b8;">The client was NOT redirected to Google Reviews.</p>
+  `;
+
+  await sendOpsEmail({
+    recipients,
+    subject: `Survey feedback (${ratingLabel}): ${clientName}`,
+    bodyHtml,
+    label: "SurveyFeedbackAlert",
+  });
+}

@@ -37,6 +37,9 @@ const DEFAULTS = {
   // si ORS empieza a fallar o a devolver basura.
   travel_time_buffer_minutes: "10",
   distance_validation_enabled: "true",
+  // LAB413 (encuesta de satisfacción): URL de Google Reviews que se le muestra
+  // a un cliente que puntuó 5/5. Fallback a la env GOOGLE_REVIEW_URL.
+  google_review_url: "",
 };
 
 // Cache corta en memoria: evita pegarle a Supabase en cada request (ej. cada
@@ -138,6 +141,16 @@ export async function getOperationalSettings() {
     travelTimeBufferMinutes: parseIntSafe(s.travel_time_buffer_minutes, 10),
     distanceValidationEnabled: s.distance_validation_enabled !== "false",
   };
+}
+
+/**
+ * URL de Google Reviews para el funnel de la encuesta de satisfacción (LAB413).
+ * Prioridad: setting `google_review_url` → env `GOOGLE_REVIEW_URL` → "".
+ */
+export async function getGoogleReviewUrl() {
+  const s = await getRawSettings();
+  const fromSetting = String(s.google_review_url || "").trim();
+  return fromSetting || String(process.env.GOOGLE_REVIEW_URL || "").trim();
 }
 
 /**
