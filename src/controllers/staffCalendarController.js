@@ -50,6 +50,10 @@ function toStaffShape(row, selfId) {
     notes: sanitizeNotes(row.special_instructions),
     teammates,
     isRecurring: row.series_id != null,
+    // Clave para agrupar las notas de "próximo cleaner" (event_notes.series_key,
+    // ver eventNotesController.js): el maestro de la serie si es recurrente, la
+    // propia instancia si es un evento suelto.
+    seriesKey: row.series_id ?? row.id,
   };
 }
 

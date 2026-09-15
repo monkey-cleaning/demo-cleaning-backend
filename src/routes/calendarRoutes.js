@@ -14,6 +14,7 @@ import {
 } from "../controllers/calendarController.js";
 import { searchAppointmentsByTitle as searchCalendarEvents } from "../controllers/appointmentController.js";
 import { recordHistory } from "../services/recordHistory.js";
+import { listEventNotes } from "../controllers/eventNotesController.js";
 
 const r = Router();
 
@@ -44,6 +45,9 @@ function auditCalendarWrite(verb) {
 }
 
 r.get("/search", requireAdmin, searchCalendarEvents);
+// Notas de cleaners sobre un evento/serie — solo lectura acá: las escribe el
+// cleaner desde /api/staff/calendar/events/notes (eventNotesController.js).
+r.get("/events/notes", requireAdmin, listEventNotes);
 r.get("/events", requireAdmin, getCalendarEvents);
 r.post("/events", requireAdmin, createCalendarEvent);
 r.get("/events/:id/available-staff", requireAdmin, getAvailableStaff);
