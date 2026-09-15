@@ -1,6 +1,19 @@
 import { supabase } from "../supabaseClient.js";
+import { recordEntityChange, recordHistory } from "../services/recordHistory.js";
 
 const PAGE_LIMIT = 25;
+
+// LAB418 — campos de employees que se auditan en record_history.
+const AUDITED_EMPLOYEE_FIELDS = [
+  "name",
+  "email",
+  "phone",
+  "is_active",
+  "is_team_leader",
+  "has_license",
+  "hourly_work_rate",
+  "gender",
+];
 
 function parseIntSafe(v, fallback) {
   const n = parseInt(v, 10);
@@ -212,6 +225,12 @@ export async function updateEmployee(req, res) {
 
     fields.updated_at = new Date().toISOString();
 
+    const { data: before } = await supabase
+      .from("employees")
+      .select(AUDITED_EMPLOYEE_FIELDS.join(","))
+      .eq("id", id)
+      .maybeSingle();
+
     const { data, error } = await supabase
       .from("employees")
       .update(fields)
@@ -222,6 +241,16 @@ export async function updateEmployee(req, res) {
     if (error) throw error;
     if (!data)
       return res.status(404).json({ ok: false, error: "Employee not found" });
+
+    if (before) {
+      await recordEntityChange(
+        "employee",
+        id,
+        before,
+        data,
+        AUDITED_EMPLOYEE_FIELDS,
+      );
+    }
 
     console.log(`✅ Updated employee: ${id}`);
     return res.json({ ok: true, employee: data });
@@ -251,6 +280,10 @@ export async function deactivateEmployee(req, res) {
     if (error) throw error;
     if (!data)
       return res.status(404).json({ ok: false, error: "Employee not found" });
+
+    await recordHistory("employee", id, [
+      { field: "is_active", oldValue: "true", newValue: "false" },
+    ]);
 
     console.log(`🗑️  Deactivated employee: ${id} — ${data.name}`);
     return res.json({ ok: true, employee: data });

@@ -1,69 +1,51 @@
 import { calculateQuote } from "../services/cleaningQuoteCalculator.js";
-import { supabase } from "../services/supabaseService.js";
+import { computeQuoteResponse } from "../services/quoteMapping.js";
+import {
+  saveVoiceLead,
+  voiceLeadFieldsFromQuote,
+} from "../services/voiceLeadService.js";
+import { verifyElevenLabsSignature } from "../utils/elevenLabsSignature.js";
+import { sendOpsVoiceBookingAlert } from "../services/opsNotificationService.js";
 
 const WEBHOOK_TOKEN = process.env.ELEVENLABS_WEBHOOK_TOKEN;
 
-const FREQUENCY_MAP = {
-  Weekly: "Weekly",
-  Biweekly: "Biweekly",
-  "Bi-weekly": "Biweekly",
-  Monthly: "Monthly",
-  "One Time Cleaning": "One Time Cleaning",
-  "Move In/Out": "One Time Cleaning",
-  "Move In/Move Out": "One Time Cleaning",
-};
-
-function normalizeFrequency(freq) {
-  const key = String(freq || "").trim();
-  return FREQUENCY_MAP[key] || key;
-}
-
-const REQUIRED_FIELDS = ["cleaning_frequency", "bedrooms", "full_bathrooms"];
-
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/quote/calculate
+// Tool webhook del agente de ElevenLabs (cotización en vivo). Solo calcula: no
+// toca la BD ni manda mails. La validación/mapeo vive en services/quoteMapping.js.
+//
+// Antes esta función leía result.tier / result.ratePerHour / result.totalLaborHours
+// / result.clockHoursForTwoPeople — campos que cleaningQuoteCalculator.js NUNCA
+// devolvió (devuelve calcType / hourlyRate / totalHrs / hrsPerPerson / totalAmount),
+// así que el agente recibía undefined para todo salvo el total. Portado de
+// Monkey Cleaning (LAB290) que arregló exactamente este bug.
+// ─────────────────────────────────────────────────────────────────────────────
 export async function calculateQuoteEndpoint(req, res) {
   try {
     const auth = req.get("authorization") || req.get("Authorization") || "";
     const ok = WEBHOOK_TOKEN && auth.trim() === `Bearer ${WEBHOOK_TOKEN}`;
     if (!ok) return res.status(401).json({ error: "Unauthorized" });
 
-    const body = req.body || {};
-
-    const missing = REQUIRED_FIELDS.filter(
-      (f) => body[f] === undefined || body[f] === null || body[f] === "",
+    const { httpStatus, payload, lead, result } = computeQuoteResponse(
+      req.body || {},
     );
-    if (missing.length > 0) {
-      return res
-        .status(400)
-        .json({ error: `${missing.join(", ")} is required` });
+
+    if (httpStatus === 200) {
+      console.log(
+        `[QUOTE] ${new Date().toISOString()} | ${lead.cleaningFrequency} | ${lead.bedrooms} | ${lead.fullBathrooms} | $${result.totalAmount} CAD @ $${result.hourlyRate}/h | ${result.totalHrs}h`,
+      );
+    } else {
+      console.warn(
+        `[QUOTE] ${httpStatus} ${payload.code || ""} ${payload.error || ""}`,
+      );
     }
 
-    const lead = {
-      cleaningFrequency: normalizeFrequency(body.cleaning_frequency),
-      bedrooms: body.bedrooms,
-      fullBathrooms: body.full_bathrooms,
-      halfBathrooms: body.half_bathrooms,
-      propertySize: body.property_size,
-      insideFridge: body.inside_fridge,
-      insideFreezer: body.inside_freezer,
-      insideOven: body.inside_oven,
-    };
-
-    const result = calculateQuote(lead);
-
-    console.log(
-      `[QUOTE] ${new Date().toISOString()} | Frequency: ${lead.cleaningFrequency} | Bedrooms: ${lead.bedrooms} | Result: $${result.totalAmount} CAD`,
-    );
-
-    return res.status(200).json({
-      calc_type: result.tier,
-      hourly_rate_cad: result.ratePerHour,
-      total_labor_hours: result.totalLaborHours,
-      clock_hours_for_two_people: result.clockHoursForTwoPeople,
-      estimated_total_cad: result.totalAmount,
-    });
+    return res.status(httpStatus).json(payload);
   } catch (e) {
     console.error("[QUOTE] error:", e);
-    return res.status(500).json({ error: "Internal error calculating quote" });
+    return res
+      .status(500)
+      .json({ error: "Internal error calculating quote", code: "INTERNAL" });
   }
 }
 
@@ -143,47 +125,20 @@ export async function calculateQuoteVoiceEndpoint(req, res) {
 
     const result = calculateQuote(lead);
 
-    // ────────────────────────────────────────────────
-    // Guardar en voice_leads
-    // ────────────────────────────────────────────────
-    try {
-      const voiceLeadPayload = {
+    // Registro de la llamada en voice_leads (no rompe la respuesta si falla).
+    const saved = await saveVoiceLead(
+      {
         call_sid: body.CallSid || null,
         from_phone: body.From || null,
-        cleaning_frequency: cleaningFrequency,
-        bedrooms,
-        full_bathrooms: fullBathrooms,
-        inside_fridge: body.digit_extra_fridge === "1" ? "yes" : null,
-        inside_freezer: body.digit_extra_freezer === "1" ? "yes" : null,
-        inside_oven: body.digit_extra_oven === "1" ? "yes" : null,
-        estimated_total_cad: result.totalAmount,
-        estimated_total_hours: result.totalHrs,
-        hourly_rate_cad: result.hourlyRate ?? result.ratePerHour ?? null,
-        calc_type: result.calcType ?? result.tier ?? null,
-        status: "quoted",
         source: "Voice IVR",
-      };
-
-      const { data: saved, error: dbError } = await supabase
-        .from("voice_leads")
-        .upsert(voiceLeadPayload, { onConflict: "call_sid" })
-        .select()
-        .single();
-
-      if (dbError) {
-        console.error(
-          "[QUOTE-VOICE] Error saving voice_lead:",
-          dbError.message,
-        );
-        // No rompemos la llamada por esto: igual devolvemos la cotización
-      } else {
-        console.log(
-          `[QUOTE-VOICE] voice_lead saved | id=${saved?.id} | CallSid=${body.CallSid}`,
-        );
-      }
-    } catch (dbErr) {
-      console.error("[QUOTE-VOICE] Unexpected DB error:", dbErr.message);
-    }
+        status: "quoted",
+        ...voiceLeadFieldsFromQuote(lead, result),
+      },
+      { onConflict: "call_sid" },
+    );
+    console.log(
+      `[QUOTE-VOICE] voice_lead saved | id=${saved?.id ?? "?"} | CallSid=${body.CallSid}`,
+    );
 
     // ────────────────────────────────────────────────
     // Respuesta para Twilio Studio
@@ -211,5 +166,124 @@ export async function calculateQuoteVoiceEndpoint(req, res) {
   } catch (e) {
     console.error("[QUOTE-VOICE] error:", e);
     return res.status(500).json({ error: "Internal error calculating quote" });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/quote/elevenlabs/webhook
+// Post-call webhook (transcription) del agente de ElevenLabs. Persiste la fila
+// final en voice_leads y, si el cliente quiso reservar o se escaló, avisa a ops.
+// Portado de Monkey Cleaning (LAB290).
+//
+// Sin ELEVENLABS_WEBHOOK_SECRET la verificación de firma falla → 401, sin
+// romper nada (no hay cron: la ruta es inerte hasta configurar el secret).
+// ─────────────────────────────────────────────────────────────────────────────
+
+function toBool(v) {
+  if (typeof v === "boolean") return v;
+  const s = String(v ?? "").trim().toLowerCase();
+  return s === "true" || s === "yes" || s === "1";
+}
+function toNum(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+function extrasToColumns(extras) {
+  const s = String(extras ?? "").toLowerCase();
+  return {
+    inside_fridge: s.includes("fridge") ? "yes" : null,
+    inside_freezer: s.includes("freezer") ? "yes" : null,
+    inside_oven: s.includes("oven") ? "yes" : null,
+  };
+}
+
+export async function elevenLabsPostCallWebhook(req, res) {
+  const verdict = verifyElevenLabsSignature({
+    rawBody: req.rawBody,
+    signatureHeader:
+      req.get("ElevenLabs-Signature") || req.get("elevenlabs-signature"),
+    secret: process.env.ELEVENLABS_WEBHOOK_SECRET,
+  });
+  if (!verdict.ok) {
+    console.warn(`[QUOTE-EL] webhook rejected: ${verdict.reason}`);
+    return res.status(401).json({ error: "invalid signature" });
+  }
+
+  // Ack inmediato; el procesamiento no debe bloquear la respuesta.
+  res.status(200).json({ received: true });
+
+  try {
+    const body = req.body || {};
+    if (body.type && body.type !== "post_call_transcription") {
+      console.log(`[QUOTE-EL] ignored type=${body.type}`);
+      return;
+    }
+
+    const data = body.data || {};
+    const analysis = data.analysis || {};
+    const dc = analysis.data_collection_results || {};
+    const val = (k) => (dc[k] && dc[k].value != null ? dc[k].value : null);
+
+    const phoneCall = data.metadata?.phone_call || {};
+    const wantsToBook = toBool(val("wants_to_book"));
+    const escalated = toBool(val("escalated"));
+    const status = escalated
+      ? "escalated"
+      : wantsToBook
+        ? "booking_requested"
+        : "quoted";
+
+    const fields = {
+      conversation_id: data.conversation_id ?? null,
+      call_sid: phoneCall.call_sid ?? null,
+      from_phone: phoneCall.external_number ?? null,
+      source: "Voice AI (ElevenLabs)",
+      status,
+      cleaning_frequency: val("cleaning_frequency"),
+      bedrooms: val("bedrooms"),
+      full_bathrooms: val("full_bathrooms"),
+      half_bathrooms: val("half_bathrooms"),
+      property_size: val("property_size"),
+      ...extrasToColumns(val("extras")),
+      estimated_total_cad: toNum(val("quoted_total_cad")),
+      estimated_total_hours: toNum(val("quoted_labor_hours")),
+      wants_to_book: wantsToBook,
+      escalated,
+      escalation_reason: val("escalation_reason"),
+      caller_name: val("caller_name"),
+      callback_number: val("callback_number"),
+      transcript_summary: analysis.transcript_summary ?? null,
+      caller_notes: val("caller_notes"),
+      raw: body,
+    };
+
+    const saved = await saveVoiceLead(fields, { onConflict: "conversation_id" });
+
+    console.log(
+      `[QUOTE-EL] ${new Date().toISOString()} | conv=${data.conversation_id} | status=${status} | total=$${val("quoted_total_cad")} | book=${wantsToBook} | escalated=${escalated}`,
+    );
+
+    if (wantsToBook || escalated) {
+      await sendOpsVoiceBookingAlert({
+        conversationId: data.conversation_id,
+        fromPhone: phoneCall.external_number,
+        callbackNumber: val("callback_number"),
+        callerName: val("caller_name"),
+        status,
+        escalationReason: val("escalation_reason"),
+        quote: {
+          total: val("quoted_total_cad"),
+          hours: val("quoted_labor_hours"),
+          frequency: val("cleaning_frequency"),
+          bedrooms: val("bedrooms"),
+          fullBathrooms: val("full_bathrooms"),
+        },
+        summary: analysis.transcript_summary,
+        notes: val("caller_notes"),
+        leadId: saved?.id ?? null,
+      });
+    }
+  } catch (e) {
+    console.error("[QUOTE-EL] post-call processing error:", e);
   }
 }

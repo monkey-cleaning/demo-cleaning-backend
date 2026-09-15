@@ -1,5 +1,6 @@
 import { supabase } from "../supabaseClient.js";
 import { invalidateSettingsCache } from "../services/settingsService.js";
+import { recordHistory, GLOBAL_ENTITY_ID } from "../services/recordHistory.js";
 import { loadClassificationConfig } from "../services/eventClassification.js";
 import {
   validateColorOverrides,
@@ -24,6 +25,8 @@ const PUBLIC_KEYS = [
   "ops_alert_email",
   "confirmation_reminder_days_before",
   "confirmation_pairing_grace_minutes",
+  "google_review_url",
+  "booking_blackout_weeks",
   ...SPECIAL_COLOR_SETTING_KEYS,
 ];
 
@@ -61,6 +64,8 @@ export async function getSettings(req, res) {
       ops_alert_email: "",
       confirmation_reminder_days_before: "2",
       confirmation_pairing_grace_minutes: "60",
+      google_review_url: "",
+      booking_blackout_weeks: "0",
       // Defaults en línea con los fallbacks de eventClassification.js —
       // si nunca se guardaron en `settings`, ambos módulos coinciden igual.
       confirmar_color_id: "5",
@@ -152,6 +157,27 @@ export async function updateSettings(req, res) {
           ok: false,
           error: `"${k}" must be a valid Google Calendar colorId (1-11), got: ${v}`,
         });
+      }
+
+      // LAB413: opcional, pero si viene tiene que ser una URL http(s).
+      if (k === "google_review_url" && v && !/^https?:\/\/.+/i.test(v)) {
+        return res.status(400).json({
+          ok: false,
+          error: `"google_review_url" must be an http(s) URL or empty, got: ${v}`,
+        });
+      }
+
+      // LAB427: ventana (en semanas, contando la actual) que queda cerrada a
+      // reserva web. 0 = sin bloqueo. Tope de 8 para que un dedazo no cierre
+      // la agenda por meses.
+      if (k === "booking_blackout_weeks") {
+        const n = parseInt(v, 10);
+        if (isNaN(n) || String(n) !== String(v).trim() || n < 0 || n > 8) {
+          return res.status(400).json({
+            ok: false,
+            error: `"booking_blackout_weeks" must be an integer between 0 and 8, got: ${v}`,
+          });
+        }
       }
 
       // LAB290: obligatorio — sin destino, la alerta de liberación automática
@@ -322,6 +348,18 @@ export async function updateSettings(req, res) {
       }
     }
 
+    // LAB418: snapshot previo de las keys que se van a tocar, para registrar en
+    // record_history solo las que REALMENTE cambian (guardar el mismo valor
+    // no genera fila).
+    const touchedKeys = entries.map(([k]) => k);
+    const { data: prevRows } = await supabase
+      .from("settings")
+      .select("key, value")
+      .in("key", touchedKeys);
+    const prevByKey = Object.fromEntries(
+      (prevRows ?? []).map((r) => [r.key, r.value]),
+    );
+
     const rows = entries.map(([key, value]) => ({
       key,
       value: String(value),
@@ -333,6 +371,17 @@ export async function updateSettings(req, res) {
       .upsert(rows, { onConflict: "key" });
 
     if (error) throw error;
+
+    const settingChanges = entries
+      .filter(([k, v]) => String(prevByKey[k] ?? "") !== String(v))
+      .map(([k, v]) => ({
+        field: k,
+        oldValue: prevByKey[k] ?? null,
+        newValue: String(v),
+      }));
+    if (settingChanges.length) {
+      await recordHistory("setting", GLOBAL_ENTITY_ID, settingChanges);
+    }
 
     // ✅ Invalidar la cache en memoria del settingsService compartido para que
     // el próximo booking, sync o assignment modal vea el valor nuevo de

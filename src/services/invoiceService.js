@@ -4,6 +4,7 @@ import {
   createInvoice,
   getRequestConfig,
 } from "./quickbooksService.js";
+import { recordHistory } from "./recordHistory.js";
 
 // ─── CREATE DRAFT ────────────────────────────────────────────────────────────
 
@@ -154,6 +155,14 @@ export async function updateDraftInvoice(id, { line_items, due_date, notes }) {
 
   if (error) throw new Error(`Error actualizando invoice: ${error.message}`);
 
+  // LAB418 — auditoría (coarse: qué campos se tocaron, no el diff de line_items).
+  const touched = Object.keys(updates).filter((k) => k !== "updated_at");
+  if (touched.length) {
+    await recordHistory("invoice", id, [
+      { field: "edited", oldValue: null, newValue: touched.join(", ") },
+    ]);
+  }
+
   console.log(`[Invoice] ✏️  Draft actualizado. id: ${id}`);
   return data;
 }
@@ -168,6 +177,10 @@ export async function deleteDraftInvoice(id) {
       `Las invoices solo se pueden eliminar en estado draft (actual: ${existing.status})`,
     );
   }
+
+  await recordHistory("invoice", id, [
+    { field: "deleted", oldValue: "draft invoice", newValue: null },
+  ]);
 
   const { error } = await supabase.from("invoices").delete().eq("id", id);
   if (error) throw new Error(`Error eliminando invoice: ${error.message}`);
@@ -240,6 +253,10 @@ export async function publishInvoiceToQB(id) {
       `Error actualizando invoice tras publicar: ${error.message}`,
     );
 
+  await recordHistory("invoice", id, [
+    { field: "status", oldValue: "draft", newValue: "published" },
+  ]);
+
   console.log(
     `[Invoice] ✅ Publicada en QB. QB id: ${qbInvoice.Id} | Supabase id: ${id}`,
   );
@@ -288,6 +305,10 @@ export async function sendInvoiceEmail(id) {
 
   if (error)
     throw new Error(`Error actualizando status a sent: ${error.message}`);
+
+  await recordHistory("invoice", id, [
+    { field: "sent", oldValue: null, newValue: `emailed to ${client.email}` },
+  ]);
 
   console.log(
     `[Invoice] 📧 Email enviado al cliente ${client.email}. QB id: ${invoice.quickbooks_invoice_id}`,

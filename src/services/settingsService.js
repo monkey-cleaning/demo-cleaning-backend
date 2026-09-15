@@ -1,3 +1,4 @@
+import { DateTime } from "luxon";
 import { supabase } from "../supabaseClient.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -37,6 +38,15 @@ const DEFAULTS = {
   // si ORS empieza a fallar o a devolver basura.
   travel_time_buffer_minutes: "10",
   distance_validation_enabled: "true",
+  // LAB413 (encuesta de satisfacción): URL de Google Reviews que se le muestra
+  // a un cliente que puntuó 5/5. Fallback a la env GOOGLE_REVIEW_URL.
+  google_review_url: "",
+  // LAB427 — bloqueo temporal de reservas web de corto plazo cuando no hay
+  // disponibilidad de personal. Cantidad de semanas (contando la actual) que
+  // quedan cerradas a reserva: "2" = esta semana y la próxima. "0" = sin
+  // bloqueo (default). Ventana rodante anclada al lunes de la semana actual
+  // (ver getBookingBlackout); para revertir, volver a "0" desde AdminSettings.
+  booking_blackout_weeks: "0",
 };
 
 // Cache corta en memoria: evita pegarle a Supabase en cada request (ej. cada
@@ -137,6 +147,60 @@ export async function getOperationalSettings() {
     keepStablePair: s.keep_stable_pair === "true",
     travelTimeBufferMinutes: parseIntSafe(s.travel_time_buffer_minutes, 10),
     distanceValidationEnabled: s.distance_validation_enabled !== "false",
+  };
+}
+
+/**
+ * URL de Google Reviews para el funnel de la encuesta de satisfacción (LAB413).
+ * Prioridad: setting `google_review_url` → env `GOOGLE_REVIEW_URL` → "".
+ */
+export async function getGoogleReviewUrl() {
+  const s = await getRawSettings();
+  const fromSetting = String(s.google_review_url || "").trim();
+  return fromSetting || String(process.env.GOOGLE_REVIEW_URL || "").trim();
+}
+
+/**
+ * LAB427 — bloqueo temporal de reservas web de corto plazo.
+ *
+ * `booking_blackout_weeks` = cuántas semanas (contando la actual) quedan
+ * cerradas a reserva. "2" cierra esta semana y la próxima; "0" (default)
+ * no bloquea nada. La ventana es rodante: se ancla al lunes de la semana
+ * actual (zona BOOKING_TIMEZONE) y se corre sola con el calendario, así que
+ * no hay una fecha de vencimiento — para levantar el bloqueo hay que volver
+ * a poner "0" en AdminSettings.
+ *
+ * Devuelve:
+ *   { active, weeks, earliestBookingIso, earliestBookingDate }
+ * donde `earliestBookingIso` es el instante UTC (ISO) a partir del cual se
+ * puede reservar, y `earliestBookingDate` la fecha local "YYYY-MM-DD" para
+ * mostrarle al cliente. Con `active:false` ambos son null.
+ */
+export async function getBookingBlackout() {
+  const s = await getRawSettings();
+  const weeks = parseIntSafe(s.booking_blackout_weeks, 0);
+
+  if (!Number.isInteger(weeks) || weeks < 1) {
+    return {
+      active: false,
+      weeks: 0,
+      earliestBookingIso: null,
+      earliestBookingDate: null,
+    };
+  }
+
+  const tz = process.env.BOOKING_TIMEZONE || "America/Vancouver";
+  const earliest = DateTime.now()
+    .setZone(tz)
+    .startOf("week") // lunes (ISO) de la semana actual
+    .plus({ weeks })
+    .startOf("day");
+
+  return {
+    active: true,
+    weeks,
+    earliestBookingIso: earliest.toUTC().toISO(),
+    earliestBookingDate: earliest.toISODate(),
   };
 }
 

@@ -9,6 +9,7 @@ import authRoutes from "./routes/auth.js";
 import blogRoutes from "./routes/blogRoutes.js";
 import adminRoutes from "./routes/adminRoutes.js";
 import adminAuthRoutes from "./routes/adminAuthRoutes.js";
+import authRecoveryRoutes from "./routes/authRecoveryRoutes.js";
 import jobRoutes from "./routes/jobRoutes.js";
 import availabilityRoutes from "./routes/availabilityRoutes.js";
 import availabilitySyncRoutes from "./routes/availabilitySyncRoutes.js";
@@ -19,6 +20,9 @@ import paymentRoutes from "./routes/paymentRoutes.js";
 // import "./jobs/syncQuickbooks.js";
 import calendarRoutes from "./routes/calendarRoutes.js";
 import publicConfirmationRoutes from "./routes/publicConfirmationRoutes.js";
+import publicSurveyRoutes from "./routes/publicSurveyRoutes.js";
+import { startSurveyRequestJob } from "./jobs/surveyRequestJob.js";
+import { startSurveyNudgeJob } from "./jobs/surveyNudgeJob.js";
 import clientRoutes from "./routes/clientRoutes.js";
 import { startClientStatusJob } from "./jobs/clientStatusJob.js";
 import employeeRoutes from "./routes/employeeRoutes.js";
@@ -26,6 +30,7 @@ import dashboardRoutes from "./routes/dashboardRoutes.js";
 import appointmentRoutes from "./routes/appointmentRoutes.js";
 import scheduleRoutes from "./routes/scheduleRoutes.js";
 import settingsRoutes from "./routes/settingsRoutes.js";
+import historyRoutes from "./routes/historyRoutes.js";
 import { startEtransferSyncJob } from "./jobs/eTransferSyncJob.js";
 import {
   getTeams,
@@ -37,10 +42,17 @@ import { runFollowUpQuoteJob } from "./jobs/followUpQuoteJob.js";
 import { generateAvailability } from "./services/availabilityGeneratorService.js";
 import seoRoutes from "./routes/seoRoutes.js";
 import { startDailyDigestJob } from "./jobs/dailyDigestJob.js";
+import { startCoverageAlertJob } from "./jobs/coverageAlertJob.js";
 import { startConfirmationPairingJob } from "./jobs/confirmationPairingJob.js";
 import { startConfirmationReminderJob } from "./jobs/confirmationReminderJob.js";
 import { startConfirmationReleaseJob } from "./jobs/confirmationReleaseJob.js";
 import quoteRoutes from "./routes/quoteRoutes.js";
+import staffAuthRoutes from "./routes/staffAuthRoutes.js";
+import staffCalendarRoutes from "./routes/staffCalendarRoutes.js";
+import staffHoursRoutes from "./routes/staffHoursRoutes.js";
+import staffRequestsRoutes from "./routes/staffRequestsRoutes.js";
+import payrollRoutes from "./routes/payrollRoutes.js";
+import staffPayrollRoutes from "./routes/staffPayrollRoutes.js";
 import "./jobs/smsReminderCron.js";
 
 dotenv.config();
@@ -59,7 +71,17 @@ app.use(
     credentials: true,
   }),
 );
-app.use(express.json());
+// req.rawBody: lo necesita la verificación HMAC del post-call webhook de
+// ElevenLabs (firma sobre los bytes crudos, no sobre el JSON re-serializado).
+app.use(
+  express.json({
+    verify: (req, _res, buf) => {
+      req.rawBody = buf;
+    },
+  }),
+);
+// Twilio (webhooks SMS) postea form-urlencoded.
+app.use(express.urlencoded({ extended: false }));
 
 // ── No cachear respuestas de la API ──────────────────────────────────────────
 // El panel admin trabaja siempre con datos vivos. Sin esto, el browser puede
@@ -78,6 +100,17 @@ app.use("/api/blogs", blogRoutes);
 // ── Quote (Twilio integration) ────────────────────────────────────────────
 app.use("/api/quote", quoteRoutes);
 
+// ── SMS webhooks de Twilio (respuestas entrantes + status de entrega) ─────────
+// Portado de Monkey. Comentado hasta configurar los webhooks en Twilio:
+// apuntar "A MESSAGE COMES IN" a POST /api/sms/incoming y el status callback a
+// POST /api/sms/status, y setear SMS_STATUS_CALLBACK_URL (o PUBLIC_BACKEND_URL).
+// La auth es la firma X-Twilio-Signature; sin TWILIO_AUTH_TOKEN se rechaza 403.
+// import smsWebhookRoutes from "./routes/smsWebhookRoutes.js";
+// app.use("/api/sms", smsWebhookRoutes);
+
+// ── Auth recovery ("forgot your password?") — compartido admin/staff ───────
+app.use("/api/auth", authRecoveryRoutes);
+
 // ── Admin ────────────────────────────────────────────────────────────────────
 app.use("/api/admin/auth", adminAuthRoutes);
 app.use("/api/admin/blogs", adminRoutes);
@@ -86,10 +119,19 @@ app.use("/api/admin/staff", employeeRoutes);
 app.use("/api/admin/staff", scheduleRoutes);
 app.use("/api/admin/appointments", appointmentRoutes);
 app.use("/api/admin/settings", settingsRoutes);
+app.use("/api/admin/history", historyRoutes); // LAB418 — audit trail / Activity
 app.get("/api/admin/teams", requireAdmin, getTeams);
 app.post("/api/admin/teams", requireAdmin, createTeam);
 app.patch("/api/admin/teams/:id", requireAdmin, updateTeam);
 app.use("/api/dashboard", dashboardRoutes);
+
+// ── Staff (portal de cleaners, rol 'cleaner' — LAB423 + LAB425) ──────────────
+app.use("/api/staff/auth", staffAuthRoutes);
+app.use("/api/staff/calendar", staffCalendarRoutes);
+app.use("/api/staff/hours", staffHoursRoutes);
+app.use("/api/staff/requests", staffRequestsRoutes);
+app.use("/api/staff/payroll", staffPayrollRoutes);
+app.use("/api/admin/payroll", payrollRoutes); // LAB428 — quincena histórica, admin
 
 // ── Jobs & Availability ──────────────────────────────────────────────────────
 app.use("/api/jobs", jobRoutes);
@@ -111,6 +153,10 @@ app.use("/api/calendar", calendarRoutes);
 // Confirmation links clicked by clients from the "CONFIRMAR" reminder email —
 // see controllers/publicConfirmationController.js.
 app.use("/api/public", publicConfirmationRoutes);
+// Encuesta de satisfacción post-servicio (LAB413 — rating + feedback). API
+// JSON sin auth, la consume la página React SurveyPage del frontend; los
+// links llegan por email. Inerte hasta SURVEY_EMAILS_ENABLED.
+app.use("/api/public", publicSurveyRoutes);
 
 // ── Healthcheck ──────────────────────────────────────────────────────────────
 app.get("/health", (_req, res) => {
@@ -135,9 +181,18 @@ app.listen(PORT, () => {
 
 // startEtransferSyncJob();
 startDailyDigestJob();
+// Alerta diaria de cobertura: eventos de mañana sin cleaner + series recurrentes
+// por terminar + huecos en el medio de una serie. Solo lee y manda mail a ops.
+startCoverageAlertJob();
 // startConfirmationPairingJob();
 // startConfirmationReminderJob();
 // startConfirmationReleaseJob();
+// LAB413: encuesta de satisfacción — DESACTIVADO hasta aprobar los copys.
+// Para activar: setear SURVEY_EMAILS_ENABLED=true, PUBLIC_BACKEND_URL,
+// FRONTEND_URL y google_review_url (setting o env), y descomentar las dos
+// líneas de abajo.
+// startSurveyRequestJob();
+// startSurveyNudgeJob();
 
 // 07:50 AM Vancouver — da 10 min de margen antes de la ventana de las 8:00
 // Expresión en UTC: Vancouver es UTC-7 (PDT) / UTC-8 (PST)

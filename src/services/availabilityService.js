@@ -190,10 +190,17 @@ export function findCoveringSlotIds(slots, rangeStart, rangeEnd) {
  * exactly minHours so the email shows the correct range.
  *
  * @param {object} opts
- * @param {number} [opts.count=3]      - max windows to return
- * @param {number} [opts.minHours=1.5] - minimum/required hours per person
+ * @param {number} [opts.count=3]       - max windows to return
+ * @param {number} [opts.minHours=1.5]  - minimum/required hours per person
+ * @param {string} [opts.earliestIso]   - LAB427: si se pasa, descarta las
+ *   ventanas que empiezan antes de este instante (bloqueo temporal de
+ *   reservas de corto plazo). Sin este arg el comportamiento no cambia.
  */
-export async function getSuggestedSlots({ count = 3, minHours = 1.5 } = {}) {
+export async function getSuggestedSlots({
+  count = 3,
+  minHours = 1.5,
+  earliestIso = null,
+} = {}) {
   const nowIso = DateTime.now().toUTC().toISO();
 
   const { data, error } = await supabase
@@ -210,10 +217,18 @@ export async function getSuggestedSlots({ count = 3, minHours = 1.5 } = {}) {
 
   const windows = groupSlotsIntoWindows(data || []);
 
+  const earliest = earliestIso ? DateTime.fromISO(earliestIso, { zone: "utc" }) : null;
+
   const qualifying = windows
     .filter((w) => {
       const ok = w.durationHours >= minHours;
       if (!ok) console.log(`  [filter] REJECTED window team=${w.team} start=${w.start_at} durationHours=${w.durationHours?.toFixed(2)} < minHours=${minHours}`);
+      return ok;
+    })
+    .filter((w) => {
+      if (!earliest) return true;
+      const ok = DateTime.fromISO(w.start_at, { zone: "utc" }) >= earliest;
+      if (!ok) console.log(`  [filter] REJECTED window team=${w.team} start=${w.start_at} — before blackout cutoff ${earliestIso}`);
       return ok;
     })
     .slice(0, count)

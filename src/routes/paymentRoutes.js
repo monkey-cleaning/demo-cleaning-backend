@@ -6,6 +6,7 @@ import {
 } from "../services/paymentService.js";
 import { requireAdmin } from "../middleware/requireAdmin.js";
 import { getPendingReview, resolveAllocation } from "../services/paymentReconciliationService.js";
+import { getWeeklyCashflow } from "../services/cashflowService.js";
 
 const router = Router();
 
@@ -26,6 +27,22 @@ router.get("/summary", async (req, res) => {
     return res.json(summary);
   } catch (err) {
     console.error("❌ GET /api/payments/summary:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/payments/cashflow?from=YYYY-MM-DD&to=YYYY-MM-DD
+ * LAB367 — facturado vs. pagado de la semana (lunes–domingo).
+ * Sin from/to → semana ISO actual.
+ */
+router.get("/cashflow", async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    const data = await getWeeklyCashflow({ from, to });
+    return res.json(data);
+  } catch (err) {
+    console.error("❌ GET /api/payments/cashflow:", err.message);
     res.status(500).json({ error: err.message });
   }
 });

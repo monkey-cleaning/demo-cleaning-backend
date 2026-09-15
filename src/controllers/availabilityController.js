@@ -10,6 +10,7 @@ import { convertLeadToClient } from "../services/convertLeadToClient.js";
 import {
   getWorkWindow,
   getOperationalSettings,
+  getBookingBlackout,
 } from "../services/settingsService.js";
 import { verifyRecaptcha } from "../services/recaptchaService.js";
 
@@ -30,6 +31,20 @@ export async function getAvailability(req, res) {
     const leadId = req.query.leadId || null;
 
     const { workEndHour: WORK_END_HOUR } = await getWorkWindow();
+
+    // LAB427 — bloqueo temporal de reservas de corto plazo (sin disponibilidad
+    // de personal). Cuando está activo, se descartan las ventanas cuyo inicio
+    // cae antes de `earliestBookingIso`; el cliente nunca ve —ni puede elegir—
+    // esas fechas. `blackoutInfo` viaja en la respuesta para que el front
+    // muestre el aviso correspondiente.
+    const blackout = await getBookingBlackout();
+    const blackoutInfo = blackout.active
+      ? { active: true, earliestDate: blackout.earliestBookingDate }
+      : { active: false };
+    const passesBlackout = (w) =>
+      !blackout.active ||
+      DateTime.fromISO(w.start_at, { zone: "utc" }) >=
+        DateTime.fromISO(blackout.earliestBookingIso);
 
     const nowIso = DateTime.now().toUTC().toISO(); // ya existe Luxon en el import
     const cutoffIso = DateTime.now().toUTC().plus({ hours: 24 }).toISO();
@@ -87,9 +102,15 @@ export async function getAvailability(req, res) {
             (trimmedEnd.hour === WORK_END_HOUR && trimmedEnd.minute === 0)
           );
         })
+        .filter(passesBlackout)
         .map((w) => trimWindowToRequired(w, MIN_HOURS));
 
-      return res.json({ ok: true, slots: filtered, requiredHours: MIN_HOURS });
+      return res.json({
+        ok: true,
+        slots: filtered,
+        requiredHours: MIN_HOURS,
+        blackout: blackoutInfo,
+      });
     }
 
     let requiredHours = MIN_HOURS;
@@ -116,6 +137,7 @@ export async function getAvailability(req, res) {
           (trimmedEnd.hour === WORK_END_HOUR && trimmedEnd.minute === 0)
         );
       })
+      .filter(passesBlackout)
       .map((w) => trimWindowToRequired(w, requiredHours));
 
     console.log(`[getAvailability] qualifying windows: ${qualifying.length}`);
@@ -129,7 +151,12 @@ export async function getAvailability(req, res) {
       );
     }
 
-    return res.json({ ok: true, slots: qualifying, requiredHours });
+    return res.json({
+      ok: true,
+      slots: qualifying,
+      requiredHours,
+      blackout: blackoutInfo,
+    });
   } catch (e) {
     return res.status(500).json({ ok: false, error: e.message });
   }
@@ -213,6 +240,21 @@ export async function bookAvailability(req, res) {
       return res.status(400).json({
         ok: false,
         error: "Bookings must be made at least 24 hours in advance",
+      });
+    }
+
+    // LAB427 — rechazo server-side del bloqueo temporal de corto plazo. El
+    // front ya no ofrece estas fechas, pero un POST directo (o una pestaña
+    // vieja) igual tiene que rebotar acá.
+    const blackout = await getBookingBlackout();
+    if (
+      blackout.active &&
+      startDt < DateTime.fromISO(blackout.earliestBookingIso)
+    ) {
+      return res.status(409).json({
+        ok: false,
+        error:
+          "We're not taking bookings for this week or next week right now. Please pick a later date, or reply to your quote email with your preferred dates.",
       });
     }
     // ── Fetch all team slots that intersect [startIso, endIso) ────────────

@@ -309,3 +309,395 @@ export async function sendLeadEmailFailureAlert({ lead, error }) {
     "LeadEmailFailureAlert",
   );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers y senders portados de Monkey Cleaning (LAB290/LAB419/LAB413/LAB425 +
+// SMS webhooks). Todos siguen la misma regla: si no hay destinatario o falta el
+// transporter, loguean y salen — una notificación nunca rompe lo que la disparó.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const BRAND = process.env.BRAND_NAME || "Demo Cleaning Co.";
+
+// Lista de destinatarios de una alerta de ops: el setting `ops_alert_email`
+// (uno o varios separados por coma) + una env var opcional de "extras" para
+// sumar gente sin tocar el setting ni el código. Deduplicada.
+async function opsRecipients({ extraEnvKey } = {}) {
+  const settings = await getRawSettings().catch(() => ({}));
+  const fromSetting = String(settings.ops_alert_email || "")
+    .split(",")
+    .map((e) => e.trim())
+    .filter(Boolean);
+  const fromEnv = extraEnvKey
+    ? String(process.env[extraEnvKey] || "")
+        .split(",")
+        .map((e) => e.trim())
+        .filter(Boolean)
+    : [];
+  return [...new Set([...fromSetting, ...fromEnv])];
+}
+
+async function sendOpsEmail({ recipients, subject, bodyHtml, label }) {
+  if (!recipients?.length) {
+    console.warn(
+      `[OpsNotif] ${label}: sin destinatarios (ops_alert_email vacío) — se salta.`,
+    );
+    return;
+  }
+  const transporter = getTransporter();
+  if (!transporter) return;
+  await sendWithRetry(
+    transporter,
+    {
+      from: `"${BRAND}" <${process.env.GMAIL_USER}>`,
+      to: recipients.join(", "),
+      subject,
+      html: emailWrapper(bodyHtml),
+    },
+    label,
+  );
+}
+
+/**
+ * Post-call de ElevenLabs: el que llamó pidió reservar o la llamada se escaló
+ * a un humano. Portado de Monkey LAB290 (sendOpsVoiceBookingAlert).
+ *
+ * @param {{ conversationId?: string, fromPhone?: string, callbackNumber?: string,
+ *   callerName?: string, status?: string, escalationReason?: string,
+ *   quote?: { total?: any, hours?: any, frequency?: any, bedrooms?: any, fullBathrooms?: any },
+ *   summary?: string, notes?: string, leadId?: string|null }} p
+ */
+export async function sendOpsVoiceBookingAlert(p = {}) {
+  const recipients = await opsRecipients();
+  const escalated = p.status === "escalated";
+  const who = p.callerName?.trim() || "Unknown caller";
+  const phone = p.callbackNumber || p.fromPhone || "—";
+  const q = p.quote || {};
+
+  const bodyHtml = `
+    <p style="margin:0 0 4px;font-size:11px;font-weight:700;color:${escalated ? "#e11d48" : "#0b8043"};letter-spacing:1px;text-transform:uppercase;">
+      ${escalated ? "Escalated to a human" : "Caller wants to book"}
+    </p>
+    <h1 style="margin:0 0 4px;font-size:20px;color:#0d1b3e;">${escapeHtml(who)}</h1>
+    <p style="margin:0 0 16px;font-size:14px;color:#64748b;">
+      A phone quote call ${escalated ? "was escalated" : "ended with a booking request"}.
+      Please follow up.
+    </p>
+    <table width="100%" cellpadding="0" cellspacing="0">
+      <tr><td style="padding:6px 0;font-size:13px;color:#334155;"><b>Call back:</b> ${escapeHtml(String(phone))}</td></tr>
+      ${p.escalationReason ? `<tr><td style="padding:6px 0;font-size:13px;color:#e11d48;"><b>Reason:</b> ${escapeHtml(p.escalationReason)}</td></tr>` : ""}
+      ${q.total ? `<tr><td style="padding:6px 0;font-size:13px;color:#334155;"><b>Quote:</b> $${escapeHtml(String(q.total))} CAD · ${escapeHtml(String(q.hours ?? "?"))}h · ${escapeHtml(String(q.frequency ?? ""))} ${escapeHtml(String(q.bedrooms ?? ""))} ${escapeHtml(String(q.fullBathrooms ?? ""))}</td></tr>` : ""}
+      ${p.notes ? `<tr><td style="padding:6px 0;font-size:13px;color:#334155;"><b>Notes:</b> ${escapeHtml(p.notes)}</td></tr>` : ""}
+      ${p.summary ? `<tr><td style="padding:6px 0;font-size:13px;color:#64748b;"><b>Summary:</b> ${escapeHtml(p.summary)}</td></tr>` : ""}
+      <tr><td style="padding:6px 0;font-size:11px;color:#94a3b8;">conversation ${escapeHtml(String(p.conversationId || "?"))}${p.leadId ? ` · voice_lead ${escapeHtml(String(p.leadId))}` : ""}</td></tr>
+    </table>
+  `;
+
+  await sendOpsEmail({
+    recipients,
+    subject: `${escalated ? "☎️ Escalated" : "☎️ Booking request"} — ${who} (${phone})`,
+    bodyHtml,
+    label: "OpsVoiceBookingAlert",
+  });
+}
+
+function fmtApptContext(appointment) {
+  if (!appointment?.starts_at) return "";
+  const dt = DateTime.fromISO(appointment.starts_at, {
+    zone: appointment.timezone || TZ,
+  });
+  const when = dt.isValid ? dt.toFormat("cccc, LLLL d 'at' h:mm a") : null;
+  const addr = appointment.property_address
+    ? ` · ${escapeHtml(appointment.property_address.split(",")[0])}`
+    : "";
+  return when
+    ? `<p style="margin:6px 0 0;font-size:13px;color:#64748b;">Nearest appointment: ${when}${addr} (${escapeHtml(appointment.status || "?")})</p>`
+    : "";
+}
+
+/**
+ * Un cliente respondió al número de recordatorios SMS. Portado de Monkey.
+ * @param {{ from?: string, body?: string, receivedAt?: string, client?: object|null, appointment?: object|null }} p
+ */
+export async function sendOpsInboundSmsAlert({
+  from,
+  body,
+  receivedAt,
+  client,
+  appointment,
+}) {
+  const recipients = await opsRecipients();
+  const clientName = client
+    ? `${client.first_name || ""} ${client.last_name || ""}`.trim() ||
+      "Unknown client"
+    : "Unknown number";
+  const when = receivedAt
+    ? DateTime.fromISO(receivedAt, { zone: TZ }).toFormat("LLLL d, h:mm a")
+    : DateTime.now().setZone(TZ).toFormat("LLLL d, h:mm a");
+  const idLine = client
+    ? `${client.email ? escapeHtml(client.email) : "no email on file"}${client.id ? ` · client_id ${escapeHtml(client.id)}` : ""}`
+    : "This number is not matched to any client in the database.";
+
+  const bodyHtml = `
+    <p style="margin:0 0 4px;font-size:11px;font-weight:700;color:#2563eb;letter-spacing:1px;text-transform:uppercase;">Client replied by SMS</p>
+    <h1 style="margin:0 0 4px;font-size:20px;color:#0d1b3e;">${escapeHtml(clientName)}</h1>
+    <p style="margin:0 0 2px;font-size:13px;color:#64748b;">${escapeHtml(from || "unknown number")} · received ${when}</p>
+    <p style="margin:0 0 16px;font-size:13px;color:#64748b;">${idLine}</p>
+    <table width="100%" cellpadding="0" cellspacing="0">
+      <tr><td style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:16px 20px;">
+        <p style="margin:0;font-size:14px;color:#0d1b3e;white-space:pre-wrap;">${escapeHtml((body || "").trim() || "(empty message / media only)")}</p>
+      </td></tr>
+    </table>
+    ${fmtApptContext(appointment)}
+    <p style="margin:16px 0 0;font-size:12px;color:#94a3b8;">
+      The reminder number does not receive replies — reach out to the client by
+      email or phone if this needs an answer.
+    </p>
+  `;
+
+  await sendOpsEmail({
+    recipients,
+    subject: `SMS reply from ${clientName}`,
+    bodyHtml,
+    label: "InboundSmsAlert",
+  });
+}
+
+/**
+ * Twilio reportó que un recordatorio no llegó. Portado de Monkey.
+ * @param {{ phone?: string, deliveryStatus?: string, errorCode?: string|null, client?: object|null, appointment?: object|null }} p
+ */
+export async function sendOpsSmsDeliveryFailureAlert({
+  phone,
+  deliveryStatus,
+  errorCode,
+  client,
+  appointment,
+}) {
+  const recipients = await opsRecipients();
+  const clientName = client
+    ? `${client.first_name || ""} ${client.last_name || ""}`.trim() ||
+      "Unknown client"
+    : "Unknown client";
+
+  const bodyHtml = `
+    <p style="margin:0 0 4px;font-size:11px;font-weight:700;color:#e11d48;letter-spacing:1px;text-transform:uppercase;">Reminder SMS not delivered</p>
+    <h1 style="margin:0 0 4px;font-size:20px;color:#0d1b3e;">${escapeHtml(clientName)}</h1>
+    <p style="margin:0 0 16px;font-size:13px;color:#64748b;">
+      ${escapeHtml(phone || "unknown number")} · Twilio status: <b>${escapeHtml(deliveryStatus)}</b>${errorCode ? ` · error ${escapeHtml(String(errorCode))}` : ""}
+    </p>
+    <p style="margin:0 0 8px;font-size:14px;color:#334155;">
+      The tomorrow-reminder text for this client did not reach the phone. If the
+      appointment stands, confirm with them another way.
+    </p>
+    ${fmtApptContext(appointment)}
+    ${errorCode ? `<p style="margin:12px 0 0;font-size:12px;color:#94a3b8;">Twilio error ${escapeHtml(String(errorCode))} — look it up at twilio.com/docs/api/errors/${escapeHtml(String(errorCode))}</p>` : ""}
+  `;
+
+  await sendOpsEmail({
+    recipients,
+    subject: `Reminder SMS ${deliveryStatus}: ${clientName}`,
+    bodyHtml,
+    label: "SmsDeliveryFailureAlert",
+  });
+}
+
+/**
+ * LAB413 — un cliente dejó feedback de la encuesta (puntuó 1–4). Portado de Monkey.
+ * @param {{ client?: { id?: string, name?: string, email?: string }, rating?: number|null, feedback?: string }} p
+ */
+export async function sendSurveyFeedbackAlert({ client, rating, feedback }) {
+  if (!feedback?.trim()) return;
+  const recipients = await opsRecipients();
+  const clientName = client?.name?.trim() || "Unknown client";
+  const ratingLabel = rating != null ? `${rating}/5` : "not rated";
+
+  const bodyHtml = `
+    <p style="margin:0 0 4px;font-size:11px;font-weight:700;color:#e11d48;letter-spacing:1px;text-transform:uppercase;">Survey feedback — needs review</p>
+    <h1 style="margin:0 0 4px;font-size:20px;color:#0d1b3e;">${escapeHtml(clientName)} rated us ${escapeHtml(ratingLabel)}</h1>
+    <p style="margin:0 0 16px;font-size:13px;color:#64748b;">
+      ${client?.email ? escapeHtml(client.email) : "no email on file"}${client?.id ? ` · client_id ${escapeHtml(client.id)}` : ""}
+    </p>
+    <table width="100%" cellpadding="0" cellspacing="0">
+      <tr><td style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:16px 20px;">
+        <p style="margin:0;font-size:14px;color:#0d1b3e;white-space:pre-wrap;">${escapeHtml(feedback.trim())}</p>
+      </td></tr>
+    </table>
+    <p style="margin:16px 0 0;font-size:12px;color:#94a3b8;">The client was NOT redirected to Google Reviews.</p>
+  `;
+
+  await sendOpsEmail({
+    recipients,
+    subject: `Survey feedback (${ratingLabel}): ${clientName}`,
+    bodyHtml,
+    label: "SurveyFeedbackAlert",
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Alerta diaria de cobertura (job coverageAlertJob.js). Combina en un solo
+// mail: (a) eventos de mañana sin cleaner, (b) series recurrentes por terminar,
+// (c) huecos en el medio de una serie viva (ocurrencia borrada por accidente).
+// Versión lean adaptada de los jobs de alertas de Monkey (LAB419 + coverage
+// monitor) — sin Google Calendar, todo contra appointments + recurrenceService.
+//
+// Va a ops_alert_email + la env var opcional COVERAGE_ALERT_EXTRA_EMAILS
+// (deduplicada), para que un problema de cobertura no se pierda porque solo
+// una persona mira el buzón de ops.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function coverageTable(rows, cols) {
+  if (!rows.length) return "";
+  const head = cols
+    .map(
+      (c) =>
+        `<th align="left" style="padding:6px 10px;font-size:11px;color:#94a3b8;text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid #e2e8f0;">${escapeHtml(c.label)}</th>`,
+    )
+    .join("");
+  const body = rows
+    .map(
+      (r) =>
+        `<tr>${cols
+          .map(
+            (c) =>
+              `<td style="padding:8px 10px;font-size:13px;color:#334155;border-bottom:1px solid #f1f5f9;">${escapeHtml(String(c.get(r) ?? "—"))}</td>`,
+          )
+          .join("")}</tr>`,
+    )
+    .join("");
+  return `<table width="100%" cellpadding="0" cellspacing="0" style="margin:6px 0 18px;"><tr>${head}</tr>${body}</table>`;
+}
+
+/**
+ * @param {{
+ *   dateLabel: string,
+ *   unassigned: Array<{ timeLabel: string, summary: string, address?: string, teamHint?: string }>,
+ *   endingSoon: Array<{ client: string, cadence: string, remaining: number, lastDate: string }>,
+ *   gaps: Array<{ client: string, series: string, missingDate: string, kind: string, actionable: boolean }>,
+ * }} p
+ */
+export async function sendCoverageAlert({ dateLabel, unassigned, endingSoon, gaps }) {
+  const recipients = await opsRecipients({
+    extraEnvKey: "COVERAGE_ALERT_EXTRA_EMAILS",
+  });
+
+  const total =
+    (unassigned?.length || 0) + (endingSoon?.length || 0) + (gaps?.length || 0);
+  if (!total) return;
+
+  const sections = [];
+
+  if (unassigned?.length) {
+    sections.push(`
+      <h2 style="margin:20px 0 4px;font-size:15px;color:#e11d48;">🔴 tomorrow — no cleaner assigned (${unassigned.length})</h2>
+      <p style="margin:0 0 4px;font-size:13px;color:#64748b;">Service events on ${escapeHtml(dateLabel)} with nobody in appointment_teams. Payroll has no record of who did these until someone is assigned.</p>
+      ${coverageTable(unassigned, [
+        { label: "Time", get: (r) => r.timeLabel },
+        { label: "Event", get: (r) => r.summary },
+        { label: "Address", get: (r) => r.address },
+        { label: "Team hint", get: (r) => r.teamHint },
+      ])}`);
+  }
+
+  if (endingSoon?.length) {
+    sections.push(`
+      <h2 style="margin:20px 0 4px;font-size:15px;color:#f59e0b;">🟠 recurring series ending soon (${endingSoon.length})</h2>
+      <p style="margin:0 0 4px;font-size:13px;color:#64748b;">The RRULE's own count/until runs out shortly — renew the series before the client loses service.</p>
+      ${coverageTable(endingSoon, [
+        { label: "Client", get: (r) => r.client },
+        { label: "Cadence", get: (r) => r.cadence },
+        { label: "Turns left", get: (r) => r.remaining },
+        { label: "Last date", get: (r) => r.lastDate },
+      ])}`);
+  }
+
+  if (gaps?.length) {
+    sections.push(`
+      <h2 style="margin:20px 0 4px;font-size:15px;color:#2563eb;">🟡 gaps inside a live series (${gaps.length})</h2>
+      <p style="margin:0 0 4px;font-size:13px;color:#64748b;">A date the RRULE says should have an appointment but none exists (likely deleted by accident) or the instance is cancelled.</p>
+      ${coverageTable(gaps, [
+        { label: "Client", get: (r) => r.client },
+        { label: "Series", get: (r) => r.series },
+        { label: "Missing date", get: (r) => r.missingDate },
+        { label: "Kind", get: (r) => (r.actionable ? `${r.kind} (act now)` : r.kind) },
+      ])}`);
+  }
+
+  const bodyHtml = `
+    <p style="margin:0 0 4px;font-size:11px;font-weight:700;color:#0d1b3e;letter-spacing:1px;text-transform:uppercase;">Coverage check — ${escapeHtml(dateLabel)}</p>
+    <h1 style="margin:0 0 4px;font-size:20px;color:#0d1b3e;">${total} thing${total === 1 ? "" : "s"} to look at</h1>
+    ${sections.join("")}
+    <p style="margin:20px 0 0;font-size:12px;color:#94a3b8;">This alert repeats every day until each item is resolved.</p>
+  `;
+
+  await sendOpsEmail({
+    recipients,
+    subject: `Coverage: ${total} item${total === 1 ? "" : "s"} — ${dateLabel}`,
+    bodyHtml,
+    label: "CoverageAlert",
+  });
+}
+
+/**
+ * LAB425 — un cleaner pidió licencia desde el portal. Portado de Monkey.
+ * NO bloquea la agenda (a diferencia de employee_time_off).
+ * @param {{ employeeName?: string, startDate: string, endDate: string, reason?: string, notes?: string }} p
+ */
+export async function sendStaffTimeOffRequestAlert({
+  employeeName,
+  startDate,
+  endDate,
+  reason,
+  notes,
+}) {
+  const recipients = await opsRecipients();
+  const name = employeeName?.trim() || "Unknown cleaner";
+  const rangeLabel =
+    startDate === endDate
+      ? escapeHtml(startDate)
+      : `${escapeHtml(startDate)} → ${escapeHtml(endDate)}`;
+
+  const bodyHtml = `
+    <p style="margin:0 0 4px;font-size:11px;font-weight:700;color:#2563eb;letter-spacing:1px;text-transform:uppercase;">Time off requested</p>
+    <h1 style="margin:0 0 4px;font-size:20px;color:#0d1b3e;">${escapeHtml(name)}</h1>
+    <p style="margin:0 0 16px;font-size:14px;color:#64748b;">${rangeLabel}</p>
+    ${reason ? `<p style="margin:0 0 8px;font-size:13px;color:#334155;"><b>Reason:</b> ${escapeHtml(reason)}</p>` : ""}
+    ${notes ? `<p style="margin:0 0 8px;font-size:13px;color:#334155;white-space:pre-wrap;"><b>Notes:</b> ${escapeHtml(notes)}</p>` : ""}
+    <p style="margin:16px 0 0;font-size:12px;color:#94a3b8;">
+      This is just the request — it does NOT block the schedule. If approved, add the actual block in /admin/staff as usual.
+    </p>
+  `;
+
+  await sendOpsEmail({
+    recipients,
+    subject: `Time off requested: ${name} (${rangeLabel})`,
+    bodyHtml,
+    label: "StaffTimeOffRequestAlert",
+  });
+}
+
+/**
+ * LAB425 — un cleaner mandó un reclamo desde el portal. Portado de Monkey.
+ * @param {{ employeeName?: string, message: string }} p
+ */
+export async function sendStaffComplaintAlert({ employeeName, message }) {
+  if (!message?.trim()) return;
+  const recipients = await opsRecipients();
+  const name = employeeName?.trim() || "Unknown cleaner";
+
+  const bodyHtml = `
+    <p style="margin:0 0 4px;font-size:11px;font-weight:700;color:#e11d48;letter-spacing:1px;text-transform:uppercase;">Staff complaint — needs review</p>
+    <h1 style="margin:0 0 4px;font-size:20px;color:#0d1b3e;">${escapeHtml(name)}</h1>
+    <table width="100%" cellpadding="0" cellspacing="0">
+      <tr><td style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:16px 20px;">
+        <p style="margin:0;font-size:14px;color:#0d1b3e;white-space:pre-wrap;">${escapeHtml(message.trim())}</p>
+      </td></tr>
+    </table>
+  `;
+
+  await sendOpsEmail({
+    recipients,
+    subject: `Staff complaint: ${name}`,
+    bodyHtml,
+    label: "StaffComplaintAlert",
+  });
+}

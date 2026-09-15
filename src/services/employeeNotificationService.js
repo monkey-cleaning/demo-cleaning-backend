@@ -28,6 +28,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import sanitizeHtml from "sanitize-html";
+import { getStaffUsernameByEmployeeId } from "./appCredentials.js";
 
 const TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
 
@@ -207,6 +208,49 @@ export function sanitizeNotes(description) {
   return cleaned || null;
 }
 
+// ── Pie del route sheet: acceso al portal de staff ──────────────────────────
+// Portado de Monkey Cleaning (LAB429 final). El digest es lo único que
+// muchos cleaners abren en el día, así que es el lugar natural para
+// recordarles que el portal existe y con qué usuario entran — los
+// passwords se comunican por otra vía, acá nunca viaja uno.
+//
+// La URL sale de FRONTEND_URL, con el mismo fallback que usa
+// clientQuoteEmailService.js (dominio real de producción, no localhost).
+const STAFF_PAGE_URL = `${(
+  process.env.FRONTEND_URL || "https://demo-cleaning-frontend.onrender.com"
+).replace(/\/+$/, "")}/staff`;
+
+async function staffFooterHtml(employee) {
+  // null es esperado: un cleaner puede estar recibiendo su route sheet antes
+  // de que le creen la cuenta de app_credentials. En ese caso va el link
+  // igual, sin la línea del usuario — mejor eso que un "Your username: null".
+  const username = await getStaffUsernameByEmployeeId(employee?.id);
+
+  return `
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:24px;border-top:1px solid #e2e8f0;">
+      <tr>
+        <td style="padding-top:20px;">
+          <p style="margin:0 0 12px;font-size:14px;color:#334155;line-height:1.5;">
+            See your full calendar, request time off or report an issue on the staff page.
+          </p>
+          <table cellpadding="0" cellspacing="0" role="presentation" style="margin:0 0 12px;">
+            <tr>
+              <td style="background:#0d1b3e;border-radius:8px;">
+                <a href="${STAFF_PAGE_URL}" style="display:inline-block;padding:11px 22px;font-size:14px;font-weight:700;color:#ffffff;text-decoration:none;">Open the staff page</a>
+              </td>
+            </tr>
+          </table>
+          ${
+            username
+              ? `<p style="margin:0;font-size:13px;color:#64748b;">Your username: <strong style="color:#0d1b3e;">${username}</strong></p>`
+              : ""
+          }
+          <p style="margin:8px 0 0;font-size:12px;color:#94a3b8;">${STAFF_PAGE_URL}</p>
+        </td>
+      </tr>
+    </table>`;
+}
+
 function emailWrapper(bodyHtml) {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -289,6 +333,7 @@ export async function sendDailyDigestEmail(employee, tasks) {
     <h1 style="margin:0 0 4px;font-size:22px;color:#0d1b3e;">Hi ${employee.name || "there"} 👋</h1>
     <p style="margin:0 0 20px;font-size:14px;color:#64748b;">${dateLabel} — ${sorted.length} ${sorted.length === 1 ? "job" : "jobs"} today.</p>
     <table width="100%" cellpadding="0" cellspacing="0">${sorted.map(taskRowHtml).join("")}</table>
+    ${await staffFooterHtml(employee)}
   `;
 
   await sendWithRetry(
