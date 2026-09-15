@@ -67,6 +67,8 @@ app.use(
       "http://localhost:5173",
       "http://localhost:5174",
       "https://demo-cleaning-frontend.onrender.com",
+      "https://doctorcarpetcleaning.ca",
+      "https://www.doctorcarpetcleaning.ca",
     ],
     credentials: true,
   }),
