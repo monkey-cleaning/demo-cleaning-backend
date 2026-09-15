@@ -5,7 +5,8 @@
  *
  * One-shot: puebla app_credentials (ver migración
  * 20260909_login_password_reset.sql) — el registro completo de cada cuenta:
- * username, password ACTUAL (de las env vars PASS_*, hasheada), email de
+ * username, password ACTUAL (una sola, compartida por todas las cuentas —
+ * ver SHARED_PASSWORD/PASS_SHARED más abajo — hasheada), email de
  * recuperación, y para cleaners el link a su fila de `employees`.
  *
  * Autocontenido a propósito: la lista de cuentas vive acá, no depende del
@@ -25,33 +26,26 @@ const ADMIN_RECOVERY_EMAIL = (
   process.env.ADMIN_RECOVERY_EMAIL || "ops@demo-cleaning.co"
 ).trim();
 
-// Admins: solo username + env var del password. email = bandeja compartida
-// por ahora (cada uno lo cambia después desde su perfil). Sin employee_id.
-const ADMINS = {
-  jhony: "PASS_JHONY",
-  jony1: "PASS_JONY1",
-  yudith1: "PASS_YUDITH1",
-  javier1: "PASS_JAVIER1",
-  clara: "PASS_CLARA",
-  tech: "PASS_TECH",
-};
+// 2026-09-15 — a pedido: todas las cuentas comparten UNA sola contraseña, ya
+// no hay un env var PASS_* por persona. Overrideable con PASS_SHARED (útil
+// para no tener el valor real en el código si esto se sube a un repo
+// público); sin esa env cae al valor pedido.
+const SHARED_PASSWORD = (process.env.PASS_SHARED || "Demo123!").trim();
 
-// Cleaners: username → { envVar, email }. El `email` es el de employees.email
-// (ver seed de la demo) — sirve de email de recuperación Y para resolver el
-// employee_id.
+// Admins: solo el username. email = bandeja compartida por ahora (cada uno
+// lo cambia después desde su perfil). Sin employee_id.
+const ADMINS = ["tech", "admin1", "admin2"];
+
+// Cleaners: username → employees.email (ver seed de la demo) — sirve de
+// email de recuperación Y para resolver el employee_id.
 const CLEANERS = {
-  ana: { envVar: "PASS_CLEANER_ANA", email: "ana.torres@demo-cleaning.co" },
-  bruno: { envVar: "PASS_CLEANER_BRUNO", email: "bruno.silva@demo-cleaning.co" },
-  carla: { envVar: "PASS_CLEANER_CARLA", email: "carla.nunez@demo-cleaning.co" },
-  diego: { envVar: "PASS_CLEANER_DIEGO", email: "diego.ramos@demo-cleaning.co" },
-  elena: { envVar: "PASS_CLEANER_ELENA", email: "elena.vega@demo-cleaning.co" },
-  franco: { envVar: "PASS_CLEANER_FRANCO", email: "franco.molina@demo-cleaning.co" },
+  ana: "ana.torres@demo-cleaning.co",
+  bruno: "bruno.silva@demo-cleaning.co",
+  carla: "carla.nunez@demo-cleaning.co",
+  diego: "diego.ramos@demo-cleaning.co",
+  elena: "elena.vega@demo-cleaning.co",
+  franco: "franco.molina@demo-cleaning.co",
 };
-
-// Fallback de demo — mismo criterio que TEST_USERS/CLEANER_USERS: sirve para
-// probar el portal ya mismo sin cargar PASS_* en .env. En un deploy real,
-// setear las env vars y borrar este fallback.
-const DEMO_FALLBACK_PASSWORD = "demo2026";
 
 async function resolveEmployeeIdsByEmail(emails) {
   const { data, error } = await supabase
@@ -70,26 +64,22 @@ async function run() {
   const apply = process.argv.includes("--apply");
   console.log(`[SeedCredentials] Modo: ${apply ? "APPLY (va a escribir)" : "DRY RUN (solo lista)"}`);
 
-  const empIdByEmail = await resolveEmployeeIdsByEmail(
-    Object.values(CLEANERS).map((c) => c.email),
-  );
+  const empIdByEmail = await resolveEmployeeIdsByEmail(Object.values(CLEANERS));
 
   const toSeed = [];
 
-  for (const [username, envVar] of Object.entries(ADMINS)) {
-    const plainPassword = process.env[envVar] || DEMO_FALLBACK_PASSWORD;
+  for (const username of ADMINS) {
     toSeed.push({
       username,
       role: "blog-admin",
-      plainPassword,
+      plainPassword: SHARED_PASSWORD,
       email: ADMIN_RECOVERY_EMAIL,
       employeeId: null,
-      note: process.env[envVar] ? envVar : `${envVar} (fallback demo2026)`,
+      note: "PASS_SHARED",
     });
   }
 
-  for (const [username, { envVar, email }] of Object.entries(CLEANERS)) {
-    const plainPassword = process.env[envVar] || DEMO_FALLBACK_PASSWORD;
+  for (const [username, email] of Object.entries(CLEANERS)) {
     const employeeId = empIdByEmail.get(email.toLowerCase()) ?? null;
     if (!employeeId) {
       console.warn(`  ⚠️  ${username} (cleaner): no hay employees.email == ${email} — se seedea SIN employee_id (login va a fallar hasta arreglarlo)`);
@@ -97,10 +87,10 @@ async function run() {
     toSeed.push({
       username,
       role: "cleaner",
-      plainPassword,
+      plainPassword: SHARED_PASSWORD,
       email,
       employeeId,
-      note: `${process.env[envVar] ? envVar : envVar + " (fallback demo2026)"} · employee ${employeeId ?? "MISSING"}`,
+      note: `PASS_SHARED · employee ${employeeId ?? "MISSING"}`,
     });
   }
 
