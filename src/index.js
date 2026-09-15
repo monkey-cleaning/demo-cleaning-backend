@@ -9,6 +9,7 @@ import authRoutes from "./routes/auth.js";
 import blogRoutes from "./routes/blogRoutes.js";
 import adminRoutes from "./routes/adminRoutes.js";
 import adminAuthRoutes from "./routes/adminAuthRoutes.js";
+import authRecoveryRoutes from "./routes/authRecoveryRoutes.js";
 import jobRoutes from "./routes/jobRoutes.js";
 import availabilityRoutes from "./routes/availabilityRoutes.js";
 import availabilitySyncRoutes from "./routes/availabilitySyncRoutes.js";
@@ -105,6 +106,9 @@ app.use("/api/quote", quoteRoutes);
 // La auth es la firma X-Twilio-Signature; sin TWILIO_AUTH_TOKEN se rechaza 403.
 // import smsWebhookRoutes from "./routes/smsWebhookRoutes.js";
 // app.use("/api/sms", smsWebhookRoutes);
+
+// ── Auth recovery ("forgot your password?") — compartido admin/staff ───────
+app.use("/api/auth", authRecoveryRoutes);
 
 // ── Admin ────────────────────────────────────────────────────────────────────
 app.use("/api/admin/auth", adminAuthRoutes);
