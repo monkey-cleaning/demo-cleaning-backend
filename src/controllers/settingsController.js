@@ -26,6 +26,7 @@ const PUBLIC_KEYS = [
   "confirmation_reminder_days_before",
   "confirmation_pairing_grace_minutes",
   "google_review_url",
+  "booking_blackout_weeks",
   ...SPECIAL_COLOR_SETTING_KEYS,
 ];
 
@@ -64,6 +65,7 @@ export async function getSettings(req, res) {
       confirmation_reminder_days_before: "2",
       confirmation_pairing_grace_minutes: "60",
       google_review_url: "",
+      booking_blackout_weeks: "0",
       // Defaults en línea con los fallbacks de eventClassification.js —
       // si nunca se guardaron en `settings`, ambos módulos coinciden igual.
       confirmar_color_id: "5",
@@ -163,6 +165,19 @@ export async function updateSettings(req, res) {
           ok: false,
           error: `"google_review_url" must be an http(s) URL or empty, got: ${v}`,
         });
+      }
+
+      // LAB427: ventana (en semanas, contando la actual) que queda cerrada a
+      // reserva web. 0 = sin bloqueo. Tope de 8 para que un dedazo no cierre
+      // la agenda por meses.
+      if (k === "booking_blackout_weeks") {
+        const n = parseInt(v, 10);
+        if (isNaN(n) || String(n) !== String(v).trim() || n < 0 || n > 8) {
+          return res.status(400).json({
+            ok: false,
+            error: `"booking_blackout_weeks" must be an integer between 0 and 8, got: ${v}`,
+          });
+        }
       }
 
       // LAB290: obligatorio — sin destino, la alerta de liberación automática

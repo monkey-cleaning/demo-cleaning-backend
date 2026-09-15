@@ -10,6 +10,7 @@ import {
   buildCommercialInquiryEmail,
 } from "../services/clientQuoteEmailService.js";
 import { getSuggestedSlots } from "../services/availabilityService.js";
+import { getBookingBlackout } from "../services/settingsService.js";
 import { sendLeadEmailFailureAlert } from "../services/opsNotificationService.js";
 import { verifyRecaptcha } from "../services/recaptchaService.js";
 
@@ -141,12 +142,17 @@ export async function createLead(req, res) {
           // en el lead — para que el email y la disponibilidad no diverjan.
           const calc = quote;
 
-          // 2️⃣ Pedir slots con la duración correcta para este cliente
+          // 2️⃣ Pedir slots con la duración correcta para este cliente.
+          //    LAB427: si hay bloqueo temporal de corto plazo, no sugerimos
+          //    fechas dentro de la ventana bloqueada y el email agrega el
+          //    aviso para que el cliente nos deje sus fechas preferidas.
+          const blackout = await getBookingBlackout();
           let slots = [];
           try {
             slots = await getSuggestedSlots({
               count: 3,
               minHours: calc.hrsPerPerson,
+              earliestIso: blackout.earliestBookingIso,
             });
             console.log(
               `✅ ${slots.length} slots obtenidos para el email (minHours=${calc.hrsPerPerson})`,
@@ -165,6 +171,7 @@ export async function createLead(req, res) {
             calc,
             slots, // can be empty — the email handles both cases
             leadId: dbLead.id, // 👈 so the booking URL includes ?leadId= for pre-fill
+            blackout, // LAB427 — adds the "email us your preferred dates" note
           });
 
           payload = {

@@ -95,7 +95,7 @@ export function createClientMailer() {
  * @param {Array}  [opts.slots]   - suggested availability windows (trimmed to hrsPerPerson)
  * @param {string} [opts.leadId]  - DB uuid of the lead; appended to the booking URL
  */
-export function buildResidentialQuoteEmail({ lead, calc, slots = [], leadId = null }) {
+export function buildResidentialQuoteEmail({ lead, calc, slots = [], leadId = null, blackout = null }) {
   const name        = lead.fullName || "there";
   const isMoveInOut = calc.calcType === "Move In/Out";
   const totalHrs    = calc.totalHrs;
@@ -128,6 +128,20 @@ export function buildResidentialQuoteEmail({ lead, calc, slots = [], leadId = nu
       </p>
       <p>If you don't find a time that fits your schedule, simply reply to this email and we'll be happy to help find a suitable option for you.</p>
     `;
+
+  // LAB427 — bloqueo temporal de reservas de corto plazo. Cuando está activo
+  // no empujamos a reservar (no hay fechas para ofrecer): pedimos que el
+  // cliente responda con sus fechas preferidas.
+  const schedulingHtml = blackout?.active
+    ? `
+      <p style="background:#FFF4E5;border-left:4px solid #F59E0B;padding:12px 16px;border-radius:4px;">
+        <b>A quick note on scheduling:</b> due to exceptionally high demand, we're not
+        currently taking bookings for this week or next week. If you'd like to hear about
+        our next available dates, simply reply to this email with the days and times that
+        work best for you, and we'll get back to you with options.
+      </p>
+    `
+    : slotsHtml;
 
   // ── MOVE IN/OUT template ────────────────────────────────────────────────
   if (isMoveInOut) {
@@ -163,7 +177,7 @@ export function buildResidentialQuoteEmail({ lead, calc, slots = [], leadId = nu
       <p>For your convenience, we accept payment by e-transfer, cheque, or cash.</p>
 
       <p><b>📅 Scheduling Your Service</b></p>
-      ${slotsHtml}
+      ${schedulingHtml}
 
       <p>We understand how important it is to leave your home in top condition, and we'd be delighted to help make your move smooth and stress-free ✨</p>
 
@@ -209,7 +223,7 @@ export function buildResidentialQuoteEmail({ lead, calc, slots = [], leadId = nu
     <p>For your convenience, we accept payment by e-transfer, cheque, or cash.</p>
 
     <p><b>📅 Scheduling Your Service</b></p>
-    ${slotsHtml}
+    ${schedulingHtml}
 
     <p>We'd love the opportunity to make your home feel fresh, clean, and comfortable ✨</p>
 
