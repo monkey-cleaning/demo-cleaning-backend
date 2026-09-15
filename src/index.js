@@ -49,6 +49,8 @@ import staffAuthRoutes from "./routes/staffAuthRoutes.js";
 import staffCalendarRoutes from "./routes/staffCalendarRoutes.js";
 import staffHoursRoutes from "./routes/staffHoursRoutes.js";
 import staffRequestsRoutes from "./routes/staffRequestsRoutes.js";
+import payrollRoutes from "./routes/payrollRoutes.js";
+import staffPayrollRoutes from "./routes/staffPayrollRoutes.js";
 import "./jobs/smsReminderCron.js";
 
 dotenv.config();
@@ -123,6 +125,8 @@ app.use("/api/staff/auth", staffAuthRoutes);
 app.use("/api/staff/calendar", staffCalendarRoutes);
 app.use("/api/staff/hours", staffHoursRoutes);
 app.use("/api/staff/requests", staffRequestsRoutes);
+app.use("/api/staff/payroll", staffPayrollRoutes);
+app.use("/api/admin/payroll", payrollRoutes); // LAB428 — quincena histórica, admin
 
 // ── Jobs & Availability ──────────────────────────────────────────────────────
 app.use("/api/jobs", jobRoutes);
