@@ -22,6 +22,7 @@ import calendarRoutes from "./routes/calendarRoutes.js";
 import publicConfirmationRoutes from "./routes/publicConfirmationRoutes.js";
 import publicSurveyRoutes from "./routes/publicSurveyRoutes.js";
 import { startSurveyRequestJob } from "./jobs/surveyRequestJob.js";
+import { startSurveyNudgeJob } from "./jobs/surveyNudgeJob.js";
 import clientRoutes from "./routes/clientRoutes.js";
 import { startClientStatusJob } from "./jobs/clientStatusJob.js";
 import employeeRoutes from "./routes/employeeRoutes.js";
@@ -79,7 +80,7 @@ app.use(
     },
   }),
 );
-// Twilio (webhooks SMS) y el form de la encuesta postean form-urlencoded.
+// Twilio (webhooks SMS) postea form-urlencoded.
 app.use(express.urlencoded({ extended: false }));
 
 // ── No cachear respuestas de la API ──────────────────────────────────────────
@@ -152,8 +153,9 @@ app.use("/api/calendar", calendarRoutes);
 // Confirmation links clicked by clients from the "CONFIRMAR" reminder email —
 // see controllers/publicConfirmationController.js.
 app.use("/api/public", publicConfirmationRoutes);
-// Encuesta de satisfacción post-servicio (LAB413 — rating + feedback). Páginas
-// HTML sin auth; los links llegan por email. Inerte hasta SURVEY_EMAILS_ENABLED.
+// Encuesta de satisfacción post-servicio (LAB413 — rating + feedback). API
+// JSON sin auth, la consume la página React SurveyPage del frontend; los
+// links llegan por email. Inerte hasta SURVEY_EMAILS_ENABLED.
 app.use("/api/public", publicSurveyRoutes);
 
 // ── Healthcheck ──────────────────────────────────────────────────────────────
@@ -186,9 +188,11 @@ startCoverageAlertJob();
 // startConfirmationReminderJob();
 // startConfirmationReleaseJob();
 // LAB413: encuesta de satisfacción — DESACTIVADO hasta aprobar los copys.
-// Para activar: setear SURVEY_EMAILS_ENABLED=true, PUBLIC_BACKEND_URL y
-// google_review_url (setting o env), y descomentar la línea de abajo.
+// Para activar: setear SURVEY_EMAILS_ENABLED=true, PUBLIC_BACKEND_URL,
+// FRONTEND_URL y google_review_url (setting o env), y descomentar las dos
+// líneas de abajo.
 // startSurveyRequestJob();
+// startSurveyNudgeJob();
 
 // 07:50 AM Vancouver — da 10 min de margen antes de la ventana de las 8:00
 // Expresión en UTC: Vancouver es UTC-7 (PDT) / UTC-8 (PST)

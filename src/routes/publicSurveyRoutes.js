@@ -1,30 +1,26 @@
-// Encuesta de satisfacción post-servicio (LAB413, portado de Monkey Cleaning).
+// Encuesta de satisfacción post-servicio (API JSON pública).
+// Portado de Monkey Cleaning (LAB413).
 //
-// Sin requireAdmin a propósito: son los links que el cliente clickea desde el
-// email. Montar en index.js FUERA del grupo /api/admin:
+// Sin requireAdmin: la consume la página React pública `SurveyPage` del
+// frontend. Montar en index.js FUERA del grupo /api/admin:
 //
 //   import publicSurveyRoutes from "./routes/publicSurveyRoutes.js";
 //   app.use("/api/public", publicSurveyRoutes);
-//
-// El POST de feedback usa un <form> sin JS → requiere express.urlencoded()
-// montado en index.js.
 
 import { Router } from "express";
 import {
-  ratingPreview,
+  getSurveyState,
   submitRating,
-  feedbackForm,
   submitFeedback,
+  goReview,
 } from "../controllers/publicSurveyController.js";
 
 const r = Router();
 
-// /feedback antes que /:rating — si no, "feedback" entraría por el param :rating.
-r.get("/survey/:token/feedback", feedbackForm);
+// Rutas literales antes de /:rating para que no las capture el param.
+r.get("/survey/:token", getSurveyState);
 r.post("/survey/:token/feedback", submitFeedback);
-// GET = página de confirmación (no graba, a prueba de prefetch de escáneres de
-// email). POST = graba la calificación.
-r.get("/survey/:token/:rating", ratingPreview);
+r.get("/survey/:token/go-review", goReview);
 r.post("/survey/:token/:rating", submitRating);
 
 export default r;

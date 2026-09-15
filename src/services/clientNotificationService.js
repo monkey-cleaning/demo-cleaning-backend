@@ -247,12 +247,18 @@ export async function sendConfirmationRequestEmail(client, slots) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Encuesta de satisfacción post-servicio (portado de Monkey Cleaning LAB413).
+// Encuesta de satisfacción post-servicio (portado de Monkey Cleaning LAB413 +
+// su refactor "move client pages to frontend, defer thank-you emails to a
+// next-morning nudge").
 //
 // Tres emails al cliente:
-//   1. sendSurveyRequestEmail        — "puntuá tu limpieza 1–5" (lo manda el job)
-//   2. sendSurveyReviewThankYouEmail — puntuó 5 → pedir review público en Google
-//   3. sendSurveyFeedbackThankYouEmail — puntuó 1–4 → preguntar qué mejorar
+//   1. sendSurveyRequestEmail       — "puntuá tu limpieza 1–5" (jobs/surveyRequestJob.js)
+//   2. sendSurveyReviewNudgeEmail   — puntuó 5 pero nunca abrió Google → nudge (jobs/surveyNudgeJob.js)
+//   3. sendSurveyFeedbackNudgeEmail — puntuó 1–4 pero nunca dejó comentario → nudge (jobs/surveyNudgeJob.js)
+//
+// Los links de calificación apuntan a la página del FRONTEND (React, graba la
+// nota al montar); solo el botón de "review" del nudge apunta al backend, para
+// que el click quede trackeado (survey_review_clicked_at) antes del 302 a Google.
 //
 // SEGURIDAD: todo acá está detrás de SURVEY_EMAILS_ENABLED (default off) — el
 // interruptor pedido. Sin "true" no se envía nada. SURVEY_TEST_EMAIL redirige
@@ -275,22 +281,32 @@ function surveyRecipient(clientEmail) {
   return testTo || clientEmail;
 }
 
-function surveyLink(token, suffix) {
+// Página del frontend, ej. https://demo-cleaning-frontend.onrender.com/survey/<token>/5
+function frontendSurveyLink(token, suffix = "") {
+  const base = (
+    process.env.FRONTEND_URL || "https://demo-cleaning-frontend.onrender.com"
+  ).replace(/\/$/, "");
+  return `${base}/survey/${token}${suffix}`;
+}
+
+// Endpoint del backend (solo para el redirect trackeado de go-review).
+function backendSurveyLink(token, suffix = "") {
   const base = (process.env.PUBLIC_BACKEND_URL || "").replace(/\/$/, "");
   if (!base) {
     console.warn(
-      "[ClientNotif] PUBLIC_BACKEND_URL no está seteada en .env — el link de la encuesta va a quedar roto.",
+      "[ClientNotif] PUBLIC_BACKEND_URL no está seteada en .env — el link trackeado de review va a quedar roto.",
     );
   }
   return `${base}/api/public/survey/${token}${suffix}`;
 }
 
 function ratingButtonsHtml(token) {
+  // 1..5 como botones tappeables → la página del frontend.
   const cells = [1, 2, 3, 4, 5]
     .map(
       (n) => `
         <td style="padding:0 4px;">
-          <a href="${surveyLink(token, `/${n}`)}"
+          <a href="${frontendSurveyLink(token, `/${n}`)}"
              style="display:block;width:44px;line-height:44px;text-align:center;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:8px;color:#0d1b3e;font-size:17px;font-weight:700;text-decoration:none;">
             ${n}
           </a>
@@ -344,32 +360,28 @@ export async function sendSurveyRequestEmail(client, token) {
 }
 
 /**
- * Puntuó 5 → agradecer y pedir un review público en Google. Fire-and-forget
- * desde el endpoint público de rating.
+ * NUDGE — puntuó 5 pero nunca abrió el link de Google Review. Lo manda al día
+ * siguiente jobs/surveyNudgeJob.js (una sola vez; el guard es
+ * survey_review_nudge_at). El botón apunta al BACKEND para que el click quede
+ * trackeado (survey_review_clicked_at) antes del 302 a Google.
  * @param {{ name?: string, email: string }} client
- * @param {string} reviewUrl  link de Google Reviews (settingsService.getGoogleReviewUrl)
+ * @param {string} token  clients.survey_token
  */
-export async function sendSurveyReviewThankYouEmail(client, reviewUrl) {
-  if (!surveyEmailsEnabled("sendSurveyReviewThankYouEmail")) return false;
+export async function sendSurveyReviewNudgeEmail(client, token) {
+  if (!surveyEmailsEnabled("sendSurveyReviewNudgeEmail")) return false;
   if (!client?.email) return false;
-  if (!reviewUrl) {
-    console.warn(
-      "[ClientNotif] sendSurveyReviewThankYouEmail: sin google_review_url configurado — se salta.",
-    );
-    return false;
-  }
   const transporter = getTransporter();
   if (!transporter) return false;
 
   const bodyHtml = `
-    <p style="margin:0 0 4px;font-size:11px;font-weight:700;color:#0b8043;letter-spacing:1px;text-transform:uppercase;">Thank you</p>
-    <h1 style="margin:0 0 4px;font-size:22px;color:#0d1b3e;">You made our day, ${escapeHtml(client.name || "there")}! 🎉</h1>
+    <p style="margin:0 0 4px;font-size:11px;font-weight:700;color:#0b8043;letter-spacing:1px;text-transform:uppercase;">A small favour</p>
+    <h1 style="margin:0 0 4px;font-size:22px;color:#0d1b3e;">You rated us 5 stars, ${escapeHtml(client.name || "there")} 🎉</h1>
     <p style="margin:0 0 16px;font-size:14px;color:#64748b;">
-      We're so glad you loved your cleaning. If you have a moment, a quick Google review means the world to a small local team like ours:
+      Thank you! If you have a moment, a quick Google review means the world to a small local team like ours — it only takes a minute:
     </p>
     <table cellpadding="0" cellspacing="0" role="presentation">
       <tr><td style="background:#0b8043;border-radius:8px;">
-        <a href="${escapeHtml(reviewUrl)}"
+        <a href="${backendSurveyLink(token, "/go-review")}"
            style="display:inline-block;padding:12px 22px;color:#ffffff;font-size:14px;font-weight:700;text-decoration:none;">
           Leave a Google review
         </a>
@@ -383,35 +395,37 @@ export async function sendSurveyReviewThankYouEmail(client, reviewUrl) {
     {
       from: `"${SURVEY_BRAND}" <${process.env.GMAIL_USER}>`,
       to: surveyRecipient(client.email),
-      subject: "Thank you! Would you share it on Google?",
+      subject: "Would you share your 5 stars on Google? ✨",
       html: emailWrapper(bodyHtml),
       attachments: logoAttachments(),
     },
-    "SurveyReviewThankYou",
+    "SurveyReviewNudge",
   );
 }
 
 /**
- * Puntuó 1–4 → agradecer y pedir detalle de qué mejorar. Linkea al mismo form
- * de feedback que muestra la landing. SIN link de Google Reviews.
+ * NUDGE — puntuó 1–4 pero nunca dejó un comentario. Lo manda al día siguiente
+ * jobs/surveyNudgeJob.js (una sola vez; el guard es survey_feedback_nudge_at).
+ * Linkea a la página del frontend, que muestra el form. SIN link de Google.
  * @param {{ name?: string, email: string }} client
  * @param {string} token  clients.survey_token
+ * @param {number} rating clients.survey_rating (para armar la URL)
  */
-export async function sendSurveyFeedbackThankYouEmail(client, token) {
-  if (!surveyEmailsEnabled("sendSurveyFeedbackThankYouEmail")) return false;
+export async function sendSurveyFeedbackNudgeEmail(client, token, rating) {
+  if (!surveyEmailsEnabled("sendSurveyFeedbackNudgeEmail")) return false;
   if (!client?.email) return false;
   const transporter = getTransporter();
   if (!transporter) return false;
 
   const bodyHtml = `
-    <p style="margin:0 0 4px;font-size:11px;font-weight:700;color:#0b8043;letter-spacing:1px;text-transform:uppercase;">Thank you</p>
-    <h1 style="margin:0 0 4px;font-size:22px;color:#0d1b3e;">Thanks for the honest feedback, ${escapeHtml(client.name || "there")}</h1>
+    <p style="margin:0 0 4px;font-size:11px;font-weight:700;color:#0b8043;letter-spacing:1px;text-transform:uppercase;">We'd love to know more</p>
+    <h1 style="margin:0 0 4px;font-size:22px;color:#0d1b3e;">Help us do better, ${escapeHtml(client.name || "there")}</h1>
     <p style="margin:0 0 16px;font-size:14px;color:#64748b;">
-      We'd really like to get it right for you. Could you tell us a bit more about what we could have done better?
+      You rated your recent cleaning below a 5, and we'd really like to understand what we could have done better. It only takes a moment:
     </p>
     <table cellpadding="0" cellspacing="0" role="presentation">
       <tr><td style="background:#0d1b3e;border-radius:8px;">
-        <a href="${surveyLink(token, "/feedback")}"
+        <a href="${frontendSurveyLink(token, `/${rating}`)}"
            style="display:inline-block;padding:12px 22px;color:#ffffff;font-size:14px;font-weight:700;text-decoration:none;">
           Tell us what to improve
         </a>
@@ -425,10 +439,10 @@ export async function sendSurveyFeedbackThankYouEmail(client, token) {
     {
       from: `"${SURVEY_BRAND}" <${process.env.GMAIL_USER}>`,
       to: surveyRecipient(client.email),
-      subject: "Thank you — how can we do better?",
+      subject: "How can we do better? ✨",
       html: emailWrapper(bodyHtml),
       attachments: logoAttachments(),
     },
-    "SurveyFeedbackThankYou",
+    "SurveyFeedbackNudge",
   );
 }
