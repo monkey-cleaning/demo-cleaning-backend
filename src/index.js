@@ -21,6 +21,7 @@ import paymentRoutes from "./routes/paymentRoutes.js";
 import calendarRoutes from "./routes/calendarRoutes.js";
 import publicConfirmationRoutes from "./routes/publicConfirmationRoutes.js";
 import publicSurveyRoutes from "./routes/publicSurveyRoutes.js";
+import publicSettingsRoutes from "./routes/publicSettingsRoutes.js";
 import { startSurveyRequestJob } from "./jobs/surveyRequestJob.js";
 import { startSurveyNudgeJob } from "./jobs/surveyNudgeJob.js";
 import clientRoutes from "./routes/clientRoutes.js";
@@ -159,6 +160,8 @@ app.use("/api/public", publicConfirmationRoutes);
 // JSON sin auth, la consume la página React SurveyPage del frontend; los
 // links llegan por email. Inerte hasta SURVEY_EMAILS_ENABLED.
 app.use("/api/public", publicSurveyRoutes);
+// Contacto y redes sociales públicos del sitio (Footer, /contact-us, WhatsApp CTA).
+app.use("/api/public", publicSettingsRoutes);
 
 // ── Healthcheck ──────────────────────────────────────────────────────────────
 app.get("/health", (_req, res) => {

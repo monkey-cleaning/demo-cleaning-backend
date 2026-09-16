@@ -47,6 +47,18 @@ const DEFAULTS = {
   // bloqueo (default). Ventana rodante anclada al lunes de la semana actual
   // (ver getBookingBlackout); para revertir, volver a "0" desde AdminSettings.
   booking_blackout_weeks: "0",
+  // Contacto/redes sociales públicos del sitio — Footer, /contact-us y el CTA
+  // de WhatsApp los leen vía GET /api/public/site-settings (sin auth), y se
+  // editan desde AdminSettings → "Contact & Social Links". contact_phone es
+  // texto libre (se muestra tal cual); whatsapp_number es solo dígitos con
+  // código de país (se usa para armar el link wa.me/<número>). Las URLs de
+  // redes sociales pueden quedar vacías para ocultar ese ícono en el sitio.
+  contact_phone: "1 (604) 555-0142",
+  contact_email: "contact@democleaning.co",
+  contact_address: "123 Main St, Victoria, BC V9A 0H7, Canada",
+  whatsapp_number: "16045550142",
+  social_instagram_url: "",
+  social_facebook_url: "",
 };
 
 // Cache corta en memoria: evita pegarle a Supabase en cada request (ej. cada
@@ -201,6 +213,23 @@ export async function getBookingBlackout() {
     weeks,
     earliestBookingIso: earliest.toUTC().toISO(),
     earliestBookingDate: earliest.toISODate(),
+  };
+}
+
+/**
+ * Contacto y redes sociales públicos del sitio (Footer, /contact-us, CTA de
+ * WhatsApp). Consumido por GET /api/public/site-settings — nunca expone el
+ * resto de `settings` (parámetros operativos internos).
+ */
+export async function getPublicSiteSettings() {
+  const s = await getRawSettings();
+  return {
+    contact_phone: s.contact_phone,
+    contact_email: s.contact_email,
+    contact_address: s.contact_address,
+    whatsapp_number: s.whatsapp_number,
+    social_instagram_url: s.social_instagram_url,
+    social_facebook_url: s.social_facebook_url,
   };
 }
 

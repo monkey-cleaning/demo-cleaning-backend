@@ -27,6 +27,12 @@ const PUBLIC_KEYS = [
   "confirmation_pairing_grace_minutes",
   "google_review_url",
   "booking_blackout_weeks",
+  "contact_phone",
+  "contact_email",
+  "contact_address",
+  "whatsapp_number",
+  "social_instagram_url",
+  "social_facebook_url",
   ...SPECIAL_COLOR_SETTING_KEYS,
 ];
 
@@ -66,6 +72,12 @@ export async function getSettings(req, res) {
       confirmation_pairing_grace_minutes: "60",
       google_review_url: "",
       booking_blackout_weeks: "0",
+      contact_phone: "1 (604) 555-0142",
+      contact_email: "contact@democleaning.co",
+      contact_address: "123 Main St, Victoria, BC V9A 0H7, Canada",
+      whatsapp_number: "16045550142",
+      social_instagram_url: "",
+      social_facebook_url: "",
       // Defaults en línea con los fallbacks de eventClassification.js —
       // si nunca se guardaron en `settings`, ambos módulos coinciden igual.
       confirmar_color_id: "5",
@@ -187,6 +199,43 @@ export async function updateSettings(req, res) {
           return res.status(400).json({
             ok: false,
             error: `"ops_alert_email" must be a valid email address, got: ${v || "(empty)"}`,
+          });
+        }
+      }
+
+      // Contacto público del sitio (Footer / Contact Us) — obligatorios, ya
+      // que su ausencia dejaría al sitio público sin forma de contacto.
+      if (k === "contact_email") {
+        if (!v || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) {
+          return res.status(400).json({
+            ok: false,
+            error: `"contact_email" must be a valid email address, got: ${v || "(empty)"}`,
+          });
+        }
+      }
+      if ((k === "contact_phone" || k === "contact_address") && !v.trim()) {
+        return res.status(400).json({
+          ok: false,
+          error: `"${k}" cannot be empty.`,
+        });
+      }
+      // whatsapp_number: solo dígitos (con código de país) — se usa tal cual
+      // para armar el link wa.me/<número>.
+      if (k === "whatsapp_number") {
+        if (!/^\d{7,15}$/.test(v)) {
+          return res.status(400).json({
+            ok: false,
+            error: `"whatsapp_number" must be digits only (7-15), including country code, got: ${v}`,
+          });
+        }
+      }
+      // URLs de redes sociales: opcionales — vacío oculta el ícono en el
+      // sitio público (mismo criterio que google_review_url).
+      if ((k === "social_instagram_url" || k === "social_facebook_url") && v) {
+        if (!/^https?:\/\/\S+$/i.test(v)) {
+          return res.status(400).json({
+            ok: false,
+            error: `"${k}" must be an http(s) URL, got: ${v}`,
           });
         }
       }
