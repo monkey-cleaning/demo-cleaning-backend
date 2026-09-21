@@ -2,7 +2,7 @@
 // config/site.js
 //
 // Config de marca / sitio público para white-label. Todo sale de env (o
-// defaults neutros). Sin hardcodes de Monkey Cleaning.
+// defaults neutros). Sin hardcodes de marca de un cliente concreto.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const DEFAULT_STATIC_ROUTES = Object.freeze([{ path: "/", priority: "1.0" }]);

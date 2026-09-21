@@ -1,17 +1,19 @@
 # demo-cleaning-backend
 
-Backend white-label de servicios de limpieza (fork de Monkey Cleaning). **Una instancia por cliente** (Render + Supabase + env).
+Plantilla white-label del backend de servicios de limpieza. **Una instancia por cliente** (Render + Supabase + env). Se clona/configura por venta SaaS; no es el backend de ningún cliente concreto.
 
 ## Blog: modos `off` | `manual` | `auto`
 
-La preferencia vive en la tabla `site_settings` (no en env). El cliente la cambia desde Settings sin reiniciar.
+La preferencia vive en `site_settings` (no en env). El cliente la cambia desde Settings sin reiniciar.
 
 | Modo guardado | Entitlement (`auto_addon_status === 'active'`) | Modo efectivo |
 |---|---|---|
 | `off` | — | `off` |
 | `manual` | — | `manual` |
 | `auto` | sí | `auto` |
-| `auto` | no | **`manual`** (degradación) + si eligió auto se marca `auto_addon_status = 'requested'` |
+| `auto` | no | **`manual`** (degradación) + se marca `auto_addon_status = 'requested'` |
+
+Default tras migración: **`blog_mode = 'off'`**, `auto_addon_status = 'inactive'`.
 
 - **`off`**: API pública de blogs → 404; CRUD admin → 403 `blog_disabled`. No borra posts.
 - **`manual`**: CRUD admin completo. Ingest de plataforma: solo `status: "draft"` sobre `external_id` existente (despublicar). Crear/publicar → 409 `blog_auto_disabled`.
@@ -26,19 +28,11 @@ La preferencia vive en la tabla `site_settings` (no en env). El cliente la cambi
 
 Cuando exista cobro (Stripe / Mercado Pago), el webhook de pago debería llamar al mismo `PUT .../addon` (o `setAutoAddonStatus`).
 
-### Instancias que ya reciben blogs de la plataforma (Monkey)
-
-Tras la migración (default `manual` / `inactive`), corré:
+### Demostración / instancia de prueba con auto activo
 
 ```sql
-UPDATE site_settings
-SET blog_mode = 'auto',
-    auto_addon_status = 'active',
-    updated_at = now()
-WHERE id = 1;
+UPDATE site_settings SET blog_mode = 'auto', auto_addon_status = 'active', updated_at = now() WHERE id = 1;
 ```
-
-Así el ingest sigue aceptando create/publish como antes de este cambio.
 
 ---
 
@@ -49,7 +43,7 @@ Así el ingest sigue aceptando create/publish como antes de este cambio.
 3. Bucket Storage `blog-images` (público si el front sirve heroes desde ahí).
 4. Env mínimas (ver abajo). En **production** `PUBLIC_SITE_URL` es **obligatoria**.
 5. Front: apuntar API; consumir `GET /api/site-config` para nav `/blog`.
-6. Modo inicial: dejar `manual` (default) o `off`. Si van a usar seo-blog-platform, seguir “Activar el addon auto”.
+6. Blog arranca en `off`. Activar `manual` o el flujo auto según el plan del cliente.
 7. CORS: sumar el dominio del front en `src/index.js` (hoy hardcodeado) o parametrizar en un follow-up.
 
 ---
@@ -69,7 +63,7 @@ Así el ingest sigue aceptando create/publish como antes de este cambio.
 
 | Variable | Descripción |
 |---|---|
-| `PUBLIC_SITE_URL` | Origen público del **frontend** (sitemap + `public_url` del ingest). Ej. `https://monkeycleaning.com` |
+| `PUBLIC_SITE_URL` | Origen público del **frontend** (sitemap + `public_url` del ingest). Ej. `https://cliente.example.com` |
 
 ### Blog / SEO (recomendadas)
 
@@ -81,18 +75,6 @@ Así el ingest sigue aceptando create/publish como antes de este cambio.
 | `BRAND_NAME` | `"Cleaning Co."` | Marca neutra |
 | `SITE_SITEMAP_STATIC_ROUTES` | `[{"path":"/","priority":"1.0"}]` | JSON de rutas estáticas del sitemap. `/blog` y posts se agregan solo si el modo efectivo ≠ `off`. |
 | `FRONTEND_URL` | — | Fallback de `PUBLIC_SITE_URL` si esta última falta (no alcanza en prod) |
-
-### Ejemplo Monkey (paridad)
-
-```env
-PUBLIC_SITE_URL=https://monkeycleaning.com
-SEO_BLOG_DEFAULT_AUTHOR=Monkey Cleaning
-SEO_BLOG_ALLOWED_CLIENT_SLUGS=monkey
-SEO_BLOG_PLATFORM_SERVICE_TOKEN=<token>
-SITE_SITEMAP_STATIC_ROUTES=[{"path":"/","priority":"1.0"},{"path":"/contact-us","priority":"0.9"},{"path":"/privacy","priority":"0.3"},{"path":"/services/general","priority":"0.7"},{"path":"/services/general/residential","priority":"0.8"},{"path":"/services/general/commercial","priority":"0.8"},{"path":"/services/general/offices","priority":"0.8"},{"path":"/services/specialized","priority":"0.7"},{"path":"/services/specialized/tile","priority":"0.8"},{"path":"/services/specialized/carpet","priority":"0.8"}]
-```
-
-Más el `UPDATE` de addon activo arriba.
 
 ---
 
@@ -140,7 +122,7 @@ Más el `UPDATE` de addon activo arriba.
 }
 ```
 
-Fuera de auto sin draft-existente: `409 { "success": false, "code": "blog_auto_disabled", "mode": "manual" }`.
+Fuera de auto sin draft-existente: `409 { "success": false, "code": "blog_auto_disabled", "mode": "…" }`.
 
 ---
 
@@ -167,7 +149,7 @@ curl -s -X PUT http://localhost:4000/api/admin/settings/blog \
 curl -s -X POST http://localhost:4000/api/internal/content/blogs \
   -H "Authorization: Bearer $SEO_BLOG_PLATFORM_SERVICE_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"external_id":"demo-1","slug":"hello-world","title":"Hello","body_markdown":"## Intro\nHola","status":"published","client_slug":"monkey"}'
+  -d '{"external_id":"demo-1","slug":"hello-world","title":"Hello","body_markdown":"## Intro\nHola","status":"published"}'
 
 # Despublicar (también funciona si efectivo != auto)
 curl -s -X POST http://localhost:4000/api/internal/content/blogs \
@@ -186,7 +168,7 @@ Sin token / token inválido → `401`. Payload inválido → `400` con `details`
 ## RLS
 
 - `site_settings`: **ENABLE ROW LEVEL SECURITY** sin policies (solo service role).
-- `blog_posts` / `blog_sections`: **no hay migraciones de RLS en este repo**. Revisar en el dashboard de Supabase de cada proyecto (`pg_tables` / Auth policies). Si están públicas vía anon key, el front no debería usar anon para escribir; este backend siempre usa service role.
+- `blog_posts` / `blog_sections`: no hay migraciones de RLS en este repo. Revisar en el dashboard de Supabase de cada proyecto. Este backend siempre usa service role.
 
 ## Scripts
 
