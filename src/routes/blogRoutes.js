@@ -1,7 +1,17 @@
 import express from 'express';
 import { supabase } from '../supabaseClient.js';
+import { getEffectiveBlogMode } from '../services/blogModeService.js';
 
 const router = express.Router();
+
+async function rejectIfBlogOff(_req, res) {
+  const mode = await getEffectiveBlogMode();
+  if (mode === 'off') {
+    res.status(404).json({ error: 'Not found' });
+    return true;
+  }
+  return false;
+}
 
 /**
  * GET /api/blogs
@@ -9,6 +19,8 @@ const router = express.Router();
  */
 router.get('/', async (_req, res) => {
   try {
+    if (await rejectIfBlogOff(_req, res)) return;
+
     const { data, error } = await supabase
       .from('blog_posts')
       .select('id, slug, title, excerpt, hero_image_url, hero_image_alt, tag, author, published_at, seo_title, seo_description')
@@ -49,6 +61,8 @@ router.get('/:slug', async (req, res) => {
   const { slug } = req.params;
 
   try {
+    if (await rejectIfBlogOff(req, res)) return;
+
     // Post principal
     const { data: posts, error: postError } = await supabase
       .from('blog_posts')
