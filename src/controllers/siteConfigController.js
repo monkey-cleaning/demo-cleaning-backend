@@ -13,10 +13,10 @@ export async function getSiteConfig(_req, res) {
     });
   } catch (e) {
     console.error("❌ getSiteConfig:", e.message);
-    // Fail-open alineado al servicio: manual / enabled
+    // Misma política que blogModeService: sin lectura fiable → off
     return res.json({
-      blogEnabled: true,
-      blogMode: "manual",
+      blogEnabled: false,
+      blogMode: "off",
     });
   }
 }

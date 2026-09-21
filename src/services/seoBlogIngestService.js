@@ -10,7 +10,49 @@ export {
   getPublicSiteUrl,
   mapPayloadToPostRow,
   validateSeoBlogPayload,
+  resolveExcerpt,
+  stripMarkdownToPlain,
+  truncateAtWord,
+  REQUIRED_FIELDS,
 } from './seoBlogIngestMapper.js';
+
+/**
+ * Mapea errores Postgres a respuesta HTTP tipada (nunca 500 sin code).
+ * @returns {{ status: number, code: string, error: string, details?: object } | null}
+ */
+export function mapIngestDbError(err) {
+  if (!err || typeof err !== 'object') return null;
+  const pgCode = err.code;
+
+  if (pgCode === '23505') {
+    return {
+      status: 409,
+      code: 'conflict',
+      error: 'Unique constraint violation (slug or external_id)',
+      details: { message: err.message, constraint: err.details ?? null },
+    };
+  }
+
+  if (pgCode === '23502') {
+    return {
+      status: 400,
+      code: 'db_not_null',
+      error: 'Missing required database field',
+      details: { message: err.message, column: err.details ?? null },
+    };
+  }
+
+  if (typeof pgCode === 'string' && /^23/.test(pgCode)) {
+    return {
+      status: 400,
+      code: 'db_constraint',
+      error: 'Database constraint violation',
+      details: { message: err.message, pg_code: pgCode },
+    };
+  }
+
+  return null;
+}
 
 async function findPostByExternalId(externalId) {
   const { data, error } = await supabase
@@ -69,6 +111,7 @@ export async function ingestSeoBlog(payload) {
       return {
         ok: false,
         status: 409,
+        code: 'slug_conflict',
         error: 'Slug already taken by another post with a different external_id',
         details: { slug: postRow.slug, conflicting_post_id: slugOwner.id },
       };
@@ -81,7 +124,11 @@ export async function ingestSeoBlog(payload) {
       .select('id, slug')
       .single();
 
-    if (updateError) throw updateError;
+    if (updateError) {
+      const mapped = mapIngestDbError(updateError);
+      if (mapped) return { ok: false, ...mapped };
+      throw updateError;
+    }
 
     await replaceSections(updated.id, sections);
 
@@ -100,6 +147,7 @@ export async function ingestSeoBlog(payload) {
     return {
       ok: false,
       status: 409,
+      code: 'slug_conflict',
       error: 'Slug already taken by another post with a different external_id',
       details: { slug: postRow.slug, conflicting_post_id: slugOwner.id },
     };
@@ -112,14 +160,8 @@ export async function ingestSeoBlog(payload) {
     .single();
 
   if (insertError) {
-    if (insertError.code === '23505') {
-      return {
-        ok: false,
-        status: 409,
-        error: 'Unique constraint violation (slug or external_id)',
-        details: { message: insertError.message },
-      };
-    }
+    const mapped = mapIngestDbError(insertError);
+    if (mapped) return { ok: false, ...mapped };
     throw insertError;
   }
 

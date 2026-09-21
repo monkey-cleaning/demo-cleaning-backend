@@ -3,8 +3,8 @@
 //
 // Lee site_settings (singleton) y calcula el modo efectivo de blog.
 // Cache en memoria ~30s; se invalida en PUT de settings / addon.
-// Fail-open: si la lectura falla, reusa el último valor cacheado; si no hay,
-// 'manual'. Nunca cachea el fallback.
+// Fail-safe: si la lectura falla, reusa el último valor cacheado; si no hay,
+// 'off' (blog apagado). Nunca cachea el fallback.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { supabase } from "../supabaseClient.js";
@@ -23,10 +23,21 @@ const CACHE_TTL_MS = 30_000;
 /** @type {{ row: object | null, expiresAt: number } | null} */
 let cache = null;
 
-const FALLBACK_ROW = Object.freeze({
-  blog_mode: "manual",
+/** Usado solo cuando no hay cache y la DB falla / no hay fila. No se cachea. */
+export const FALLBACK_ROW = Object.freeze({
+  blog_mode: "off",
   auto_addon_status: "inactive",
 });
+
+/**
+ * Resuelve la fila ante error de lectura o fila ausente.
+ * Preferir cache previa; si no hay, FALLBACK_ROW (off). Nunca muta el cache.
+ * @param {object|null|undefined} previousCachedRow
+ */
+export function resolveSiteSettingsOnReadFailure(previousCachedRow) {
+  if (previousCachedRow) return previousCachedRow;
+  return { ...FALLBACK_ROW };
+}
 
 /**
  * @param {string} blogMode stored preference
@@ -34,18 +45,19 @@ const FALLBACK_ROW = Object.freeze({
  * @returns {'off'|'manual'|'auto'}
  */
 export function computeEffectiveBlogMode(blogMode, entitled) {
-  const mode = BLOG_MODES.includes(blogMode) ? blogMode : "manual";
+  const mode = BLOG_MODES.includes(blogMode) ? blogMode : "off";
   if (mode === "auto" && !entitled) return "manual";
   return mode;
 }
 
 /**
- * @param {object} row
+ * Snapshot tipado: modo guardado, efectivo, entitlement, addon status.
+ * Exportado para tests del fail-safe.
  */
-function snapshotFromRow(row) {
+export function snapshotFromRow(row) {
   const blog_mode = BLOG_MODES.includes(row.blog_mode)
     ? row.blog_mode
-    : "manual";
+    : "off";
   const auto_addon_status = AUTO_ADDON_STATUSES.includes(row.auto_addon_status)
     ? row.auto_addon_status
     : "inactive";
@@ -78,19 +90,17 @@ export async function getSiteSettingsRow({ forceRefresh = false } = {}) {
 
   if (error) {
     console.error(
-      "[blogMode] Error leyendo site_settings (fail-open):",
+      "[blogMode] Error leyendo site_settings (fail-safe → off si no hay cache):",
       error.message,
     );
-    if (cache?.row) return cache.row;
-    return { ...FALLBACK_ROW };
+    return resolveSiteSettingsOnReadFailure(cache?.row);
   }
 
   if (!data) {
     console.warn(
-      "[blogMode] site_settings sin fila id=1 — fail-open a manual (no se cachea)",
+      "[blogMode] site_settings sin fila id=1 — fail-safe a off (no se cachea)",
     );
-    if (cache?.row) return cache.row;
-    return { ...FALLBACK_ROW };
+    return resolveSiteSettingsOnReadFailure(cache?.row);
   }
 
   cache = { row: data, expiresAt: now + CACHE_TTL_MS };

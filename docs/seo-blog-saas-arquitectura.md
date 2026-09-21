@@ -62,6 +62,39 @@ Campos relevantes de post: `slug`, `title`, `status`, `source` (`'seo-blog-platf
 | PUT | `/api/internal/content/addon` | Body `{ auto_addon_status }`. Única vía a `active` |
 | POST | `/api/internal/content/blogs` | Ingest. Fuerza `source = 'seo-blog-platform'` |
 
+**Payload ingest (`POST /api/internal/content/blogs`)**
+
+Obligatorios (si faltan → **400** `{ success: false, error, code: "invalid_payload", fields: [...] }`):
+
+| Campo | Notas |
+|---|---|
+| `external_id` | string; clave de idempotencia |
+| `slug` | string |
+| `title` | string |
+| `body_markdown` | string; se convierte a `blog_sections` |
+
+Opcionales y defaults del mapper (payload mínimo §3.7 **sin** `meta_description` es válido):
+
+| Campo | Default / cascada |
+|---|---|
+| `status` | `'draft'` si se omite; si viene, solo `'draft'` \| `'published'` |
+| `meta_description` | opcional; alimenta `excerpt` / `seo_description` |
+| `excerpt` (columna) | **nunca null**: (a) `meta_description` trim; (b) ~160 chars de `body_markdown` plano (sin markdown), corte en palabra; (c) `title` |
+| `seo_description` | igual que `excerpt` |
+| `seo_title` | `title` |
+| `author` | `SEO_BLOG_DEFAULT_AUTHOR` → `BRAND_NAME` → `"Blog"` |
+| `language` | `'es'` |
+| `keywords` | `[]` (nunca null) |
+| `tag` | primer keyword o `'Blog'` |
+| `hero_image_url` | `featured_image_url` o `null` |
+| `hero_image_alt` | `title` o `'Blog'` |
+| `published_at` | now() si `status=published` y no viene; si no, `null` |
+| `seo_score` | `null` |
+| `source` | siempre `'seo-blog-platform'` (ignorado si el cliente lo manda) |
+| `client_slug` | opcional; si hay allowlist env, debe estar en ella |
+
+Constraint Postgres (`23502` / `23xxx`) → respuesta tipada con `code` (`db_not_null` / `db_constraint` / `conflict`), **no** 500 sin `code`.
+
 **Ingest fuera de efectivo `auto`:**
 
 - Solo permitido: `status: "draft"` sobre `external_id` **existente** (despublicar) → `action: "updated"`.
@@ -96,7 +129,7 @@ Idempotencia por `external_id`. `status: "draft"` sobre publicado despublica.
 2. **manual** — admin CRUD OK; ingest publish/create → 409 `blog_auto_disabled`; draft+existing OK.
 3. **auto sin addon** — efectivo `manual`; status `mode: "manual"`, `entitled: false`, `auto_addon_status: "requested"` (si eligieron auto).
 4. **addon active** — efectivo `auto`; ingest create/update OK.
-5. **paused** (addon inactive/past_due o modo no auto) — draft sobre external_id existente despublica; create → 409 `blog_auto_disabled`.
+5. **Addon no activo** (`auto_addon_status` ∈ `inactive` \| `past_due`, o modo efectivo ≠ `auto`) — draft sobre external_id existente despublica; create → 409 `blog_auto_disabled`. Enum de addon: `inactive` \| `requested` \| `active` \| `past_due` (no existe valor `paused`).
 
 ---
 

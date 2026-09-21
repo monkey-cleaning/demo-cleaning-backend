@@ -4,6 +4,7 @@ import { loadBlogModeForIngest } from '../middleware/requireEffectiveAutoBlog.js
 import {
   ingestSeoBlog,
   validateSeoBlogPayload,
+  mapIngestDbError,
 } from '../services/seoBlogIngestService.js';
 import { supabase } from '../supabaseClient.js';
 import {
@@ -83,12 +84,13 @@ router.post(
   loadBlogModeForIngest,
   async (req, res) => {
     try {
-      const validationErrors = validateSeoBlogPayload(req.body);
-      if (validationErrors.length > 0) {
+      const validation = validateSeoBlogPayload(req.body);
+      if (!validation.ok) {
         return res.status(400).json({
           success: false,
-          error: 'Invalid payload',
-          details: validationErrors,
+          error: validation.errors[0] || 'Invalid payload',
+          code: 'invalid_payload',
+          fields: validation.fields,
         });
       }
 
@@ -129,6 +131,7 @@ router.post(
         return res.status(result.status).json({
           success: false,
           error: result.error,
+          code: result.code || undefined,
           details: result.details,
         });
       }
@@ -142,9 +145,19 @@ router.post(
       });
     } catch (err) {
       console.error('[seo-blog-platform] Error en POST /api/internal/content/blogs:', err);
+      const mapped = mapIngestDbError(err);
+      if (mapped) {
+        return res.status(mapped.status).json({
+          success: false,
+          error: mapped.error,
+          code: mapped.code,
+          details: mapped.details,
+        });
+      }
       return res.status(500).json({
         success: false,
         error: 'Internal server error',
+        code: 'internal_error',
       });
     }
   },

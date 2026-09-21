@@ -19,6 +19,8 @@ Default tras migración: **`blog_mode = 'off'`**, `auto_addon_status = 'inactive
 - **`manual`**: CRUD admin completo. Ingest de plataforma: solo `status: "draft"` sobre `external_id` existente (despublicar). Crear/publicar → 409 `blog_auto_disabled`.
 - **`auto`**: ingest completo. Posts con `source = 'seo-blog-platform'` no se editan/borran desde admin (403 `blog_managed_by_platform`). Posts manuales (`source` null o `'admin'`) sí.
 
+`auto_addon_status` enum: `inactive` | `requested` | `active` | `past_due` (no hay valor `paused`; “pausado” = `inactive` o `past_due`).
+
 ### Activar el addon auto (hoy, sin cobro)
 
 1. Aplicar migración `db/migrations/20260921_site_settings_blog_mode.sql`.
