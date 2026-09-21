@@ -54,9 +54,14 @@ import staffHoursRoutes from "./routes/staffHoursRoutes.js";
 import staffRequestsRoutes from "./routes/staffRequestsRoutes.js";
 import payrollRoutes from "./routes/payrollRoutes.js";
 import staffPayrollRoutes from "./routes/staffPayrollRoutes.js";
+import internalContentRoutes from "./routes/internalContentRoutes.js";
+import { validatePublicSiteUrl } from "./config/site.js";
+import { getBlogModeSnapshot } from "./services/blogModeService.js";
 import "./jobs/smsReminderCron.js";
 
 dotenv.config();
+
+validatePublicSiteUrl();
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -99,6 +104,9 @@ app.use("/api", (_req, res, next) => {
 // ── Leads & Blog ─────────────────────────────────────────────────────────────
 app.use("/api/leads", leadRoutes);
 app.use("/api/blogs", blogRoutes);
+// Ingest / status / addon de seo-blog-platform (siempre montado; el modo
+// efectivo se chequea dentro de las rutas).
+app.use("/api/internal/content", internalContentRoutes);
 
 // ── Quote (Twilio integration) ────────────────────────────────────────────
 app.use("/api/quote", quoteRoutes);
@@ -181,6 +189,15 @@ app.use((_req, res) => {
 
 app.listen(PORT, () => {
   console.log(`🚀 Backend listening on http://localhost:${PORT}`);
+  getBlogModeSnapshot()
+    .then((snap) => {
+      console.log(
+        `[blog] mode stored=${snap.blog_mode} effective=${snap.effective_mode} addon=${snap.auto_addon_status} entitled=${snap.entitled}`,
+      );
+    })
+    .catch((err) => {
+      console.warn("[blog] could not read blog mode at boot:", err.message);
+    });
   startClientStatusJob();
 });
 

@@ -1,18 +1,23 @@
 import { markdownToSections } from '../utils/markdownToSections.js';
+import {
+  buildPublicBlogUrl,
+  getDefaultBlogAuthor,
+  getPublicSiteUrl,
+} from '../config/site.js';
 
-const ALLOWED_CLIENT_SLUGS = new Set(['monkey']);
+export { buildPublicBlogUrl, getPublicSiteUrl };
+
 const ALLOWED_STATUSES = new Set(['draft', 'published']);
 
-export function getPublicSiteUrl() {
-  return (
-    process.env.PUBLIC_SITE_URL ||
-    process.env.FRONTEND_URL ||
-    'https://monkeycleaning.com'
-  ).replace(/\/$/, '');
-}
-
-export function buildPublicBlogUrl(slug) {
-  return `${getPublicSiteUrl()}/blog/${slug}`;
+function getAllowedClientSlugs() {
+  const raw = process.env.SEO_BLOG_ALLOWED_CLIENT_SLUGS;
+  if (!raw || !String(raw).trim()) return null; // null = no validar valor
+  return new Set(
+    String(raw)
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
 }
 
 /**
@@ -39,8 +44,17 @@ export function validateSeoBlogPayload(body) {
     errors.push('body_markdown is required and must be a string');
   }
 
-  if (body.client_slug != null && !ALLOWED_CLIENT_SLUGS.has(body.client_slug)) {
-    errors.push(`client_slug must be one of: ${[...ALLOWED_CLIENT_SLUGS].join(', ')}`);
+  if (body.client_slug != null) {
+    if (typeof body.client_slug !== 'string') {
+      errors.push('client_slug must be a string');
+    } else {
+      const allowed = getAllowedClientSlugs();
+      if (allowed && !allowed.has(body.client_slug)) {
+        errors.push(
+          `client_slug must be one of: ${[...allowed].join(', ')}`,
+        );
+      }
+    }
   }
 
   if (body.status != null && !ALLOWED_STATUSES.has(body.status)) {
@@ -77,13 +91,15 @@ export function mapPayloadToPostRow(payload) {
     tag: Array.isArray(payload.keywords) && payload.keywords.length > 0
       ? String(payload.keywords[0])
       : 'Blog',
-    author: process.env.SEO_BLOG_DEFAULT_AUTHOR || 'Monkey Cleaning',
+    author: getDefaultBlogAuthor(),
     status,
     published_at: publishedAt,
     seo_title: payload.title.trim(),
     seo_description: payload.meta_description?.trim() || null,
     external_id: payload.external_id,
-    source: payload.source || 'seo-blog-platform',
+    // Siempre plataforma en este mapper — no aceptar source arbitrario del payload
+    // (evita que un caller marque posts como 'admin' vía ingest).
+    source: 'seo-blog-platform',
     seo_score: payload.seo_score ?? null,
     language: payload.language || 'es',
     keywords: normalizeKeywords(payload.keywords),

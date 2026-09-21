@@ -1,22 +1,11 @@
 import { supabase } from "../supabaseClient.js";
+import {
+  getPublicSiteUrl,
+  getSitemapStaticRoutes,
+} from "../config/site.js";
+import { getEffectiveBlogMode } from "../services/blogModeService.js";
 
 const isProduction = () => process.env.NODE_ENV === "production";
-
-const getBaseUrl = (req) => `${req.protocol}://${req.get("host")}`;
-
-const STATIC_ROUTES = [
-  { path: "/", priority: "1.0" },
-  { path: "/contact-us", priority: "0.9" },
-  { path: "/privacy", priority: "0.3" },
-  { path: "/blog", priority: "0.6" },
-  { path: "/services/general", priority: "0.7" },
-  { path: "/services/general/residential", priority: "0.8" },
-  { path: "/services/general/commercial", priority: "0.8" },
-  { path: "/services/general/offices", priority: "0.8" },
-  { path: "/services/specialized", priority: "0.7" },
-  { path: "/services/specialized/tile", priority: "0.8" },
-  { path: "/services/specialized/carpet", priority: "0.8" },
-];
 
 export const getRobotsTxt = (req, res) => {
   if (!isProduction()) {
@@ -24,7 +13,7 @@ export const getRobotsTxt = (req, res) => {
     return;
   }
 
-  const baseUrl = getBaseUrl(req);
+  const baseUrl = getPublicSiteUrl();
 
   const lines = [
     "User-agent: *",
@@ -44,29 +33,40 @@ export const getSitemapXml = async (req, res) => {
     return;
   }
 
-  const baseUrl = getBaseUrl(req);
+  const baseUrl = getPublicSiteUrl();
+  const staticRoutes = getSitemapStaticRoutes();
 
-  let blogUrls = [];
-  try {
-    const { data, error } = await supabase
-      .from("blog_posts")
-      .select("slug, updated_at")
-      .eq("status", "published");
+  const effectiveMode = await getEffectiveBlogMode();
+  const blogEnabled = effectiveMode !== "off";
 
-    if (error) {
-      console.error("Supabase error /sitemap.xml blog_posts:", error);
-    } else {
-      blogUrls = (data || []).map((p) => ({
-        path: `/blog/${p.slug}`,
-        priority: "0.6",
-        lastmod: p.updated_at ? p.updated_at.slice(0, 10) : null,
-      }));
-    }
-  } catch (err) {
-    console.error("Server error /sitemap.xml blog_posts:", err);
+  const routes = [...staticRoutes];
+  if (blogEnabled && !routes.some((r) => r.path === "/blog")) {
+    routes.push({ path: "/blog", priority: "0.6" });
   }
 
-  const allRoutes = [...STATIC_ROUTES, ...blogUrls];
+  let blogUrls = [];
+  if (blogEnabled) {
+    try {
+      const { data, error } = await supabase
+        .from("blog_posts")
+        .select("slug, updated_at")
+        .eq("status", "published");
+
+      if (error) {
+        console.error("Supabase error /sitemap.xml blog_posts:", error);
+      } else {
+        blogUrls = (data || []).map((p) => ({
+          path: `/blog/${p.slug}`,
+          priority: "0.6",
+          lastmod: p.updated_at ? p.updated_at.slice(0, 10) : null,
+        }));
+      }
+    } catch (err) {
+      console.error("Server error /sitemap.xml blog_posts:", err);
+    }
+  }
+
+  const allRoutes = [...routes, ...blogUrls];
 
   const urls = allRoutes
     .map(({ path, priority, lastmod }) => {
