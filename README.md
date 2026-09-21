@@ -168,7 +168,14 @@ Sin token / token inválido → `401`. Payload inválido → `400` con `details`
 ## RLS
 
 - `site_settings`: **ENABLE ROW LEVEL SECURITY** sin policies (solo service role).
-- `blog_posts` / `blog_sections`: no hay migraciones de RLS en este repo. Revisar en el dashboard de Supabase de cada proyecto. Este backend siempre usa service role.
+- `blog_posts` / `blog_sections`: no hay policies en migraciones históricas. Ver SQL defensivo (no ejecutado) en `db/migrations/20260921_blog_tables_rls_defensive.sql`. Verificar a mano en Supabase: RLS ON, sin INSERT/UPDATE/DELETE para `anon`/`authenticated`.
+
+## Ciclo de contrato (§3.7)
+
+```bash
+# Requiere PUBLIC_BACKEND_URL, SEO_BLOG_PLATFORM_SERVICE_TOKEN, ADMIN_JWT
+node scripts/blog-contract-cycle.mjs
+```
 
 ## Scripts
 

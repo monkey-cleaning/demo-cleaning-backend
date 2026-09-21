@@ -77,6 +77,8 @@ router.get('/', async (_req, res) => {
   try {
     if (await rejectIfBlogOff(_req, res)) return;
 
+    // Contrato §3: cada post incluye `source` ('seo-blog-platform' | 'admin' | null).
+    // select('*') garantiza source + columnas que usa el panel de edición.
     const { data, error } = await supabase
       .from('blog_posts')
       .select('*')
@@ -104,6 +106,7 @@ router.get('/:id', async (req, res) => {
   try {
     if (await rejectIfBlogOff(req, res)) return;
 
+    // Contrato §3: `post.source` siempre presente en el JSON.
     const { data: posts, error: postError } = await supabase
       .from('blog_posts')
       .select('*')

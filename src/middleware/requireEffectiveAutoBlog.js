@@ -40,6 +40,7 @@ export async function requireEffectiveAutoBlog(req, res, next) {
     if (snap.effective_mode !== "auto") {
       return res.status(409).json({
         success: false,
+        error: "Blog auto mode is disabled",
         code: "blog_auto_disabled",
         mode: snap.effective_mode,
       });

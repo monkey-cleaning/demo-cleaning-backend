@@ -98,12 +98,15 @@ router.post(
 
       if (snap.effective_mode !== 'auto') {
         // Fuera de auto: solo despublicar (draft) un post existente.
+        const autoDisabledBody = {
+          success: false,
+          error: 'Blog auto mode is disabled',
+          code: 'blog_auto_disabled',
+          mode: snap.effective_mode,
+        };
+
         if (!wantsDraft) {
-          return res.status(409).json({
-            success: false,
-            code: 'blog_auto_disabled',
-            mode: snap.effective_mode,
-          });
+          return res.status(409).json(autoDisabledBody);
         }
 
         const { data: existing, error: findErr } = await supabase
@@ -115,11 +118,7 @@ router.post(
         if (findErr) throw findErr;
 
         if (!existing) {
-          return res.status(409).json({
-            success: false,
-            code: 'blog_auto_disabled',
-            mode: snap.effective_mode,
-          });
+          return res.status(409).json(autoDisabledBody);
         }
         // existing + draft → seguir al ingest (update → unpublished)
       }
