@@ -55,6 +55,7 @@ import staffRequestsRoutes from "./routes/staffRequestsRoutes.js";
 import payrollRoutes from "./routes/payrollRoutes.js";
 import staffPayrollRoutes from "./routes/staffPayrollRoutes.js";
 import internalContentRoutes from "./routes/internalContentRoutes.js";
+import siteConfigRoutes from "./routes/siteConfigRoutes.js";
 import { validatePublicSiteUrl } from "./config/site.js";
 import { getBlogModeSnapshot } from "./services/blogModeService.js";
 import "./jobs/smsReminderCron.js";
@@ -104,6 +105,7 @@ app.use("/api", (_req, res, next) => {
 // ── Leads & Blog ─────────────────────────────────────────────────────────────
 app.use("/api/leads", leadRoutes);
 app.use("/api/blogs", blogRoutes);
+app.use("/api/site-config", siteConfigRoutes);
 // Ingest / status / addon de seo-blog-platform (siempre montado; el modo
 // efectivo se chequea dentro de las rutas).
 app.use("/api/internal/content", internalContentRoutes);
