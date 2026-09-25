@@ -56,6 +56,7 @@ import payrollRoutes from "./routes/payrollRoutes.js";
 import staffPayrollRoutes from "./routes/staffPayrollRoutes.js";
 import internalContentRoutes from "./routes/internalContentRoutes.js";
 import siteConfigRoutes from "./routes/siteConfigRoutes.js";
+import { publicSiteImagesRouter, adminSiteImagesRouter } from "./routes/siteImagesRoutes.js";
 import { validatePublicSiteUrl } from "./config/site.js";
 import { getBlogModeSnapshot } from "./services/blogModeService.js";
 import "./jobs/smsReminderCron.js";
@@ -107,6 +108,7 @@ app.use("/api", (_req, res, next) => {
 app.use("/api/leads", leadRoutes);
 app.use("/api/blogs", blogRoutes);
 app.use("/api/site-config", siteConfigRoutes);
+app.use("/api/site-images", publicSiteImagesRouter);
 // Ingest / status / addon de seo-blog-platform (siempre montado; el modo
 // efectivo se chequea dentro de las rutas).
 app.use("/api/internal/content", internalContentRoutes);
@@ -133,6 +135,7 @@ app.use("/api/admin/staff", employeeRoutes);
 app.use("/api/admin/staff", scheduleRoutes);
 app.use("/api/admin/appointments", appointmentRoutes);
 app.use("/api/admin/settings", settingsRoutes);
+app.use("/api/admin/site-images", adminSiteImagesRouter); // LAB447
 app.use("/api/admin/history", historyRoutes); // LAB418 — audit trail / Activity
 app.get("/api/admin/teams", requireAdmin, getTeams);
 app.post("/api/admin/teams", requireAdmin, createTeam);
