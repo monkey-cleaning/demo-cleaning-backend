@@ -1725,13 +1725,22 @@ export async function getAvailableStaff(req, res) {
       .neq("id", id)
       .neq("status", "cancelled");
 
-    let simultaneousTeamCount = 0;
+    // Pico de equipos simultáneos dentro de la ventana del evento, no la
+    // cantidad de citas solapadas: un evento largo solapa varios trabajos
+    // consecutivos del mismo equipo que nunca corren a la vez.
+    const overlapping = [];
     for (const ca of concurrentAppts ?? []) {
       if (!ca.starts_at || !ca.ends_at) continue;
       if (!ca.appointment_teams?.length) continue;
       const cStart = DateTime.fromISO(ca.starts_at, { zone: TZ });
       const cEnd = DateTime.fromISO(ca.ends_at, { zone: TZ });
-      if (eventStart < cEnd && eventEnd > cStart) simultaneousTeamCount++;
+      if (eventStart < cEnd && eventEnd > cStart)
+        overlapping.push({ s: cStart.toMillis(), e: cEnd.toMillis() });
+    }
+    let simultaneousTeamCount = 0;
+    for (const a of overlapping) {
+      const active = overlapping.filter((b) => b.s <= a.s && b.e > a.s).length;
+      if (active > simultaneousTeamCount) simultaneousTeamCount = active;
     }
     const atCapacity = simultaneousTeamCount >= maxSimultaneousTeams;
 
