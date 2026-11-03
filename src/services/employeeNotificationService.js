@@ -131,6 +131,10 @@ function logoBlockHtml() {
   `;
 }
 
+// Pooled y memoizado: el digest manda un mail por cleaner en loop y un login
+// SMTP nuevo por mail disparaba el anti-abuso de Gmail (535 5.7.8 intermitente).
+let cachedTransporter = null;
+
 function getTransporter() {
   if (!process.env.GMAIL_USER || !process.env.GMAIL_PASS) {
     console.error(
@@ -138,13 +142,18 @@ function getTransporter() {
     );
     return null;
   }
-  return nodemailer.createTransport({
-    service: "gmail",
-    auth: {
-      user: process.env.GMAIL_USER,
-      pass: process.env.GMAIL_PASS,
-    },
-  });
+  if (!cachedTransporter) {
+    cachedTransporter = nodemailer.createTransport({
+      service: "gmail",
+      pool: true,
+      maxConnections: 1,
+      auth: {
+        user: process.env.GMAIL_USER,
+        pass: process.env.GMAIL_PASS,
+      },
+    });
+  }
+  return cachedTransporter;
 }
 
 // Same one-retry-after-2s pattern as sendBookingWebNotification in
