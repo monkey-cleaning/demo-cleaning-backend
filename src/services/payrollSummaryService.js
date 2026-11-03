@@ -12,18 +12,25 @@
 // que decide si pasa `employeeIds` acotado (staff, un solo empleado) y si
 // aplica stripMoney() antes de responder.
 //
-// Fórmula de traslado (igual que Monkey): para cada empleado, por cada día
-// calendario, la suma de los huecos entre eventos CONSECUTIVOS de ese día —
-// sin contar el tiempo antes del primer evento ni después del último. Un
-// "Lunch" u otro bloqueo interno en medio de dos jobs se DESCUENTA (corta el
-// hueco en dos tramos más chicos, no se lo saltea) porque ocupa tiempo real
-// del calendario aunque no sea trabajo facturable.
+// Fórmula de traslado (portada del fix de Monkey, calcada de su Apps Script de
+// nómina): para cada empleado, por cada día calendario, se recorren los eventos
+// consecutivos y el hueco entre uno y el siguiente cuenta como traslado SOLO si:
+//   1. Dura como máximo 1 hora — un hueco mayor se descarta ENTERO (es tiempo
+//      libre, no traslado).
+//   2. El evento que TERMINA no es un Lunch (el hueco ANTES de entrar a un
+//      Lunch sí cuenta normal).
+// Sin contar el tiempo antes del primer evento ni después del último.
+// (Monkey además excluye títulos con "Westshore": regla propia de su negocio,
+// no se porta.)
 
 import { DateTime } from "luxon";
 import { supabase } from "../supabaseClient.js";
 import { isNonServiceEventRow, isLunchEvent } from "./eventClassification.js";
 
 const TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
+
+// Mismo valor que `gapHours <= 1.0` en el Apps Script real.
+const TRAVEL_GAP_CAP_HOURS = 1;
 
 const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 
@@ -84,10 +91,13 @@ export function aggregateEmployeePayroll(rawRows) {
       String(a.starts_at).localeCompare(String(b.starts_at)),
     );
     for (let i = 1; i < sorted.length; i++) {
+      if (isLunchEvent(sorted[i - 1].gcal_summary)) continue;
       const prevEnd = DateTime.fromISO(sorted[i - 1].ends_at, { zone: TZ });
       const nextStart = DateTime.fromISO(sorted[i].starts_at, { zone: TZ });
       const gapH = nextStart.diff(prevEnd, "hours").hours;
-      if (gapH > 0) travelHours += gapH; // clamp: eventos solapados no restan
+      // clamp: eventos solapados no restan; epsilon por precisión de float
+      // alrededor del tope exacto de 1h.
+      if (gapH > 0 && gapH <= TRAVEL_GAP_CAP_HOURS + 1e-9) travelHours += gapH;
     }
   }
   travelHours = round2(travelHours);

@@ -60,7 +60,7 @@ test("traslado: un hueco limpio entre 2 eventos del mismo día", () => {
   assert.equal(r.eventCount, 2);
 });
 
-test("traslado: un Lunch en el medio se descuenta (no se saltea)", () => {
+test("traslado: un Lunch en el medio — el hueco que sale del Lunch no cuenta", () => {
   const r = aggregateEmployeePayroll([
     row("a", "2026-05-01T09:00:00-07:00", "2026-05-01T11:00:00-07:00"),
     row("lunch", "2026-05-01T11:30:00-07:00", "2026-05-01T12:00:00-07:00", {
@@ -68,13 +68,21 @@ test("traslado: un Lunch en el medio se descuenta (no se saltea)", () => {
     }),
     row("b", "2026-05-01T12:30:00-07:00", "2026-05-01T14:00:00-07:00"),
   ]);
-  // Hueco real: 11:00→11:30 (30min) + 12:00→12:30 (30min) = 1h de traslado,
-  // NO 1.5h (que sería si el Lunch se salteara del todo).
-  assert.equal(r.travelHours, 1);
+  // 11:00→11:30 (antes del Lunch) cuenta 0.5h; 12:00→12:30 (sale del Lunch)
+  // no cuenta.
+  assert.equal(r.travelHours, 0.5);
   // El Lunch no cuenta como trabajo ni aparece en la lista de eventos.
   assert.equal(r.workHours, 3.5);
   assert.equal(r.eventCount, 2);
   assert.ok(!r.events.some((e) => e.id === "lunch"));
+});
+
+test("traslado: un hueco de más de 1h se descarta entero", () => {
+  const r = aggregateEmployeePayroll([
+    row("a", "2026-05-01T09:00:00-07:00", "2026-05-01T10:00:00-07:00"),
+    row("b", "2026-05-01T11:30:00-07:00", "2026-05-01T12:30:00-07:00"),
+  ]);
+  assert.equal(r.travelHours, 0);
 });
 
 test("traslado: sin tiempo antes del primero ni después del último del día", () => {
