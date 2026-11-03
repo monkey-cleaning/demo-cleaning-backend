@@ -268,6 +268,24 @@ export async function markCustomerEmailFailed(id, errMsg) {
 }
 
 /**
+ * Reprograma un envío fallido: vuelve a pending con due_at en el futuro.
+ * Conserva `attempts` (ya se incrementó al lockear) y guarda el error.
+ */
+export async function rescheduleCustomerEmail(id, errMsg, delayMinutes = 5) {
+  const { error } = await supabase
+    .from("lead_customer_emails")
+    .update({
+      status: "pending",
+      locked_at: null,
+      due_at: new Date(Date.now() + delayMinutes * 60 * 1000).toISOString(),
+      last_error: String(errMsg || "Unknown error"),
+    })
+    .eq("id", id);
+
+  if (error) throw error;
+}
+
+/**
  * Libera locks viejos (job murió en "processing") y los vuelve a pending.
  */
 export async function releaseStaleLocks(minutes = 10) {

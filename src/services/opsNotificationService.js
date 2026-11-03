@@ -502,6 +502,47 @@ export async function sendOpsSmsDeliveryFailureAlert({
 }
 
 /**
+ * Alerta cuando el ENVÍO de emails al cliente falla definitivamente (agotó
+ * reintentos en lead_customer_emails). Un solo mail por corrida del job.
+ * @param {{ failures: Array<{ id: string, leadId?: string, to?: string, type?: string, attempts?: number, error: string }> }} p
+ */
+export async function sendCustomerEmailDeliveryFailureAlert({ failures }) {
+  if (!failures?.length) return;
+  try {
+    const recipients = await opsRecipients({ extraEnvKey: "LEAD_FAILURE_ALERT_EMAILS" });
+    const rowsHtml = failures
+      .map(
+        (f) => `
+      <tr>
+        <td style="padding:8px 0;border-bottom:1px solid #e2e8f0;font-size:13px;color:#334155;">
+          <b>${escapeHtml(f.to || "unknown")}</b> — ${escapeHtml(f.type || "unknown type")}<br/>
+          Lead ID: ${escapeHtml(String(f.leadId || "unknown"))} · Attempts: ${escapeHtml(String(f.attempts ?? "?"))}<br/>
+          <span style="color:#e11d48;">${escapeHtml(f.error || "Unknown error")}</span>
+        </td>
+      </tr>`,
+      )
+      .join("");
+    const bodyHtml = `
+      <p style="margin:0 0 4px;font-size:11px;font-weight:700;color:#e11d48;letter-spacing:1px;text-transform:uppercase;">Needs manual review</p>
+      <h1 style="margin:0 0 4px;font-size:20px;color:#0d1b3e;">Customer email could not be sent</h1>
+      <p style="margin:0 0 16px;font-size:14px;color:#64748b;">
+        ${failures.length} email(s) to clients failed after all retries and will not be retried automatically.
+        Contact these clients manually or requeue the rows in <code>lead_customer_emails</code>.
+      </p>
+      <table width="100%" cellpadding="0" cellspacing="0">${rowsHtml}</table>
+    `;
+    await sendOpsEmail({
+      recipients,
+      subject: `⚠️ ${failures.length} customer email(s) failed to send`,
+      bodyHtml,
+      label: "CustomerEmailDeliveryFailureAlert",
+    });
+  } catch (err) {
+    console.error("[OpsNotif] falló la alerta de envío al cliente:", err.message);
+  }
+}
+
+/**
  * LAB413 — un cliente dejó feedback de la encuesta (puntuó 1–4). Portado de Monkey.
  * @param {{ client?: { id?: string, name?: string, email?: string }, rating?: number|null, feedback?: string }} p
  */
