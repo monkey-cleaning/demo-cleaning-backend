@@ -1,6 +1,7 @@
 import { DateTime } from "luxon";
 import { supabase } from "../supabaseClient.js";
 
+import { TZ } from "../config/timezone.js";
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared settings reader.
 //
@@ -201,7 +202,7 @@ export async function getBookingBlackout() {
     };
   }
 
-  const tz = process.env.BOOKING_TIMEZONE || "America/Vancouver";
+  const tz = TZ;
   const earliest = DateTime.now()
     .setZone(tz)
     .startOf("week") // lunes (ISO) de la semana actual

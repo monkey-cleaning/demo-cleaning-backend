@@ -28,7 +28,7 @@ import { supabase } from "../supabaseClient.js";
 import { getRawSettings } from "../services/settingsService.js";
 import { sendOpsReleaseAlert } from "../services/opsNotificationService.js";
 
-const TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
+import { TZ } from "../config/timezone.js";
 
 // ── 1. Slots 'offered' cuyo starts_at ya entró en la ventana de release ─────
 async function findTriggeringSlots(releaseHoursBefore, testClientId) {

@@ -27,7 +27,7 @@ import { DateTime } from "luxon";
 import { supabase } from "../supabaseClient.js";
 import { isNonServiceEventRow, isLunchEvent } from "./eventClassification.js";
 
-const TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
+import { TZ } from "../config/timezone.js";
 
 // Mismo valor que `gapHours <= 1.0` en el Apps Script real.
 const TRAVEL_GAP_CAP_HOURS = 1;

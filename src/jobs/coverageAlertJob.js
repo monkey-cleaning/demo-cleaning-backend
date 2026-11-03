@@ -42,7 +42,7 @@ import {
 import { DIGEST_CUTOFF_HOUR } from "../services/employeeNotificationService.js";
 import { sendCoverageAlert } from "../services/opsNotificationService.js";
 
-const TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
+import { TZ } from "../config/timezone.js";
 const ALERT_HOUR = Math.min(23, Math.max(0, DIGEST_CUTOFF_HOUR - 2));
 
 const ENDING_SOON_TURNS = Number(process.env.COVERAGE_ENDING_SOON_TURNS || 3);

@@ -1,7 +1,8 @@
 import { supabase } from "./supabaseService.js";
 import { DateTime } from "luxon";
 
-const DEFAULT_TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
+import { TZ } from "../config/timezone.js";
+const DEFAULT_TZ = TZ;
 
 function hoursBetween(startIso, endIso) {
   const s = new Date(startIso).getTime();

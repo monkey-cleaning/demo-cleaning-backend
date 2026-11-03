@@ -22,7 +22,7 @@ import nodemailer from "nodemailer";
 import { DateTime } from "luxon";
 import { getRawSettings } from "./settingsService.js";
 
-const TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
+import { TZ } from "../config/timezone.js";
 
 // Destinatarios fijos para fallos de envío de email a un lead — vía env var
 // (LEAD_FAILURE_ALERT_EMAILS, separado por comas) en lugar de hardcodeado,
@@ -403,7 +403,7 @@ export async function sendOpsVoiceBookingAlert(p = {}) {
 function fmtApptContext(appointment) {
   if (!appointment?.starts_at) return "";
   const dt = DateTime.fromISO(appointment.starts_at, {
-    zone: appointment.timezone || TZ,
+    zone: TZ,
   });
   const when = dt.isValid ? dt.toFormat("cccc, LLLL d 'at' h:mm a") : null;
   const addr = appointment.property_address

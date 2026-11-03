@@ -18,6 +18,7 @@ const AUDITED_CLIENT_FIELDS = [
   "notes",
 ];
 import { syncAndPersistZohoId } from "../services/zohoService.js";
+import { TZ } from "../config/timezone.js";
 import {
   getPendingReview,
   getClientOpenInvoices,
@@ -67,7 +68,7 @@ function pastServiceFilter(q, todayIso) {
 }
 
 function todayIsoInBookingTz() {
-  const tz = process.env.BOOKING_TIMEZONE || "America/Vancouver";
+  const tz = TZ;
   // en-CA da YYYY-MM-DD
   return new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(new Date());
 }

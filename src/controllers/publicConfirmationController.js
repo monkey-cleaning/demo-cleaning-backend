@@ -32,7 +32,7 @@
 import { supabase } from "../supabaseClient.js";
 import { DateTime } from "luxon";
 
-const TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
+import { TZ } from "../config/timezone.js";
 
 // ── Página HTML de resultado (sin JS, sin dependencias externas) ────────────
 function resultPage({ title, message, tone = "success" }) {

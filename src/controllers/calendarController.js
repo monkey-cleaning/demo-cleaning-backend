@@ -48,7 +48,7 @@ import {
   isLunchEventSummary,
 } from "../services/eventClassification.js";
 
-const TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
+import { TZ, TZ_LABEL } from "../config/timezone.js";
 
 // ── Teams config — igual que antes, sin cambios (ya leía de DB) ─────────────
 let TEAMS_CONFIG = {};
@@ -549,7 +549,7 @@ export async function createCalendarEvent(req, res) {
       scheduled_end_time: endDt.toFormat("HH:mm:ss"),
       starts_at: startDt.toISO(),
       ends_at: endDt.toISO(),
-      timezone: TZ,
+      timezone: TZ_LABEL,
       special_instructions: description || null,
       property_address: location || "",
       gcal_summary: withTeamTag(summary, teamIdFromColor),
@@ -783,7 +783,7 @@ export async function updateCalendarEvent(req, res) {
 
       const baseFields = {
         client_id: clientId ?? existing.client_id,
-        timezone: TZ,
+        timezone: TZ_LABEL,
         special_instructions: description ?? existing.special_instructions,
         property_address: location ?? existing.property_address,
         gcal_summary: withTeamTag(

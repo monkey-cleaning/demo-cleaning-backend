@@ -26,7 +26,7 @@ import {
   DIGEST_CUTOFF_HOUR,
 } from "../services/employeeNotificationService.js";
 
-const TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
+import { TZ } from "../config/timezone.js";
 
 /**
  * Runs the full digest pipeline for a given day.

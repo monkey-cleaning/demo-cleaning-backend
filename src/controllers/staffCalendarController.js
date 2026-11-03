@@ -12,7 +12,7 @@ import { DateTime } from "luxon";
 import { supabase } from "../supabaseClient.js";
 import { sanitizeNotes } from "../services/employeeNotificationService.js";
 
-const TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
+import { TZ } from "../config/timezone.js";
 
 // employees.id del cleaner logueado, resuelto por su email (el del token, que
 // viene de CLEANER_USERS y debe coincidir con employees.email).

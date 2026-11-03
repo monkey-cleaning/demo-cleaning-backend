@@ -14,7 +14,7 @@ import {
 } from "../services/settingsService.js";
 import { verifyRecaptcha } from "../services/recaptchaService.js";
 
-const TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
+import { TZ } from "../config/timezone.js";
 const MIN_HOURS = 1.5;
 // ✅ WORK_END_HOUR y BUFFER_MINUTES ya no se hardcodean acá: se leen desde
 // `settings` (vía el settingsService compartido) al comienzo de cada

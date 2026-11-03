@@ -30,7 +30,7 @@ import { fileURLToPath } from "url";
 import sanitizeHtml from "sanitize-html";
 import { getStaffUsernameByEmployeeId } from "./appCredentials.js";
 
-const TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
+import { TZ } from "../config/timezone.js";
 
 // Hour (Vancouver-local, 24h) the daily digest cron fires. Exported so
 // jobs/dailyDigestJob.js (schedule) and controllers/calendarController.js

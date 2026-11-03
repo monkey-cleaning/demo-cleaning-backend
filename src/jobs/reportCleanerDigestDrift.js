@@ -29,7 +29,7 @@ import {
 } from "../services/employeeNotificationService.js";
 import { isNonServiceEventRow } from "../services/eventClassification.js";
 
-const TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
+import { TZ } from "../config/timezone.js";
 
 export async function runReportCleanerDigestDrift({
   date,

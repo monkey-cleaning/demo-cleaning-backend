@@ -4,6 +4,7 @@
 import cron from "node-cron";
 import { runStatusRefreshJob } from "../controllers/clientController.js";
 
+import { TZ } from "../config/timezone.js";
 export function startClientStatusJob() {
   cron.schedule(
     "0 2 * * *",
@@ -11,7 +12,7 @@ export function startClientStatusJob() {
       console.log("[Cron] Running nightly client status refresh…");
       await runStatusRefreshJob();
     },
-    { timezone: "America/Vancouver" },
+    { timezone: TZ },
   );
   console.log(
     "[Cron] Client status job scheduled (daily at 02:00 AM Vancouver time)",

@@ -1,5 +1,6 @@
 import twilio from "twilio";
 import { supabase } from "../supabaseClient.js";
+import { TZ } from "../config/timezone.js";
 
 // El SDK de Twilio TIRA si el accountSid es falsy, así que construirlo al cargar
 // el módulo hacía que el backend no booteara sin TWILIO_* en el entorno. Ahora
@@ -57,9 +58,9 @@ function shortAddress(fullAddress) {
 }
 
 function buildReminderMessage(appointment, client) {
-  // starts_at es timestamptz; formateamos en la timezone propia del appointment (America/Vancouver)
+  // starts_at es timestamptz; formateamos en la timezone propia del appointment (zona del negocio)
   const localTime = new Date(appointment.starts_at).toLocaleString("en-US", {
-    timeZone: appointment.timezone || "America/Vancouver",
+    timeZone: TZ, // no appointment.timezone: es una etiqueta y con tzdata viejo daría UTC-8
     weekday: "long",
     day: "numeric",
     month: "long",

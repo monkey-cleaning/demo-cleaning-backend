@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import { processReminders } from '../services/smsReminderService.js';
 
+import { TZ } from "../config/timezone.js";
 // Cada 15 min (antes 30): así un turno que cruza la ventana de 24 h del
 // recordatorio se toma antes. El dedupe por sms_reminders evita reenvíos.
 cron.schedule('*/15 * * * *', async () => {
@@ -9,4 +10,4 @@ cron.schedule('*/15 * * * *', async () => {
   } catch (err) {
     console.error('SMS reminder cron failed:', err);
   }
-}, { timezone: 'America/Vancouver' });
+}, { timezone: TZ });

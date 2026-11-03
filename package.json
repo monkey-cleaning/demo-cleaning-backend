@@ -4,6 +4,9 @@
   "description": "Standalone / white-label cleaning-services backend (fork of Monkey Cleaning, no Google Calendar).",
   "main": "index.js",
   "type": "module",
+  "engines": {
+    "node": ">=22.23.4 <23"
+  },
   "scripts": {
     "test": "node --test",
     "dev": "node src/index.js",

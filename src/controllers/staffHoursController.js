@@ -6,7 +6,7 @@ import { DateTime } from "luxon";
 import { supabase } from "../supabaseClient.js";
 import { isNonServiceEventRow } from "../services/eventClassification.js";
 
-const TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
+import { TZ } from "../config/timezone.js";
 
 // Mismo criterio que getQuincenalRange en el frontend (día 1–15 = Q1,
 // 16–fin de mes = Q2), en TZ Vancouver — el corte de un cleaner no puede

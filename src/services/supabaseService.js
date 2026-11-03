@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { createClient } from "@supabase/supabase-js";
 
+import { TZ } from "../config/timezone.js";
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
 
@@ -113,7 +114,7 @@ function mergeMessages(existing, incoming) {
   if (!incoming) return existing;
   if (!existing) return incoming;
   const timestamp = new Date().toLocaleString("en-CA", {
-    timeZone: "America/Vancouver",
+    timeZone: TZ,
   });
   return `${existing}\n\n--- New contact (${timestamp}) ---\n${incoming}`;
 }

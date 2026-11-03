@@ -35,7 +35,7 @@ import { DateTime } from "luxon";
 import { supabase } from "../supabaseClient.js";
 import { sendSurveyRequestEmail } from "../services/clientNotificationService.js";
 
-const TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
+import { TZ } from "../config/timezone.js";
 const LOG = "[surveyRequestJob]";
 
 // Cliente "Unassigned / pending review" — todo appointment sin cliente real.
