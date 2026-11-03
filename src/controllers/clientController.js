@@ -550,13 +550,18 @@ export async function searchClients(req, res) {
   const q = req.query.q?.trim() ?? "";
   if (q.length < 2) return res.json({ ok: true, clients: [] });
 
-  // Paso 1: búsqueda normal por nombre/email
+  // Entre comillas para que comas/paréntesis de una dirección no rompan el or()
+  const pattern = `%${q.replace(/[\\"]/g, "\\$&")}%`;
+
+  // Paso 1: búsqueda normal por nombre/email/dirección
   const { data: byName, error: byNameError } = await supabase
     .from("clients_with_name")
     .select(
       "id, name, first_name, last_name, email, status, transfer_sender_aliases, default_address, service_type, mobile, phone",
     )
-    .or(`name.ilike.%${q}%,email.ilike.%${q}%`)
+    .or(
+      `name.ilike."${pattern}",email.ilike."${pattern}",default_address.ilike."${pattern}"`,
+    )
     .limit(8);
 
   if (byNameError)

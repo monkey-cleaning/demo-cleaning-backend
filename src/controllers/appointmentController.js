@@ -449,13 +449,15 @@ export async function searchAppointmentsByTitle(req, res) {
     }
  
     const nowIso = new Date().toISOString();
- 
+    // Entre comillas para que comas/paréntesis de una dirección ("123 Main St, Victoria") no rompan el or()
+    const pattern = `%${q.replace(/[\\"]/g, "\\$&")}%`;
+
     const baseQuery = () =>
       supabase
         .from("appointments")
-        .select("id, gcal_summary, scheduled_date, starts_at, client_id")
+        .select("id, gcal_summary, scheduled_date, starts_at, client_id, property_address")
         .neq("status", "cancelled")
-        .ilike("gcal_summary", `%${q}%`);
+        .or(`gcal_summary.ilike."${pattern}",property_address.ilike."${pattern}"`);
  
     const [{ data: upcoming, error: upErr }, { data: past, error: pastErr }] = await Promise.all([
       baseQuery()
@@ -479,6 +481,7 @@ export async function searchAppointmentsByTitle(req, res) {
       isAllDay: false,
       isPast,
       clientId: row.client_id ?? null,
+      address: row.property_address ?? null,
       htmlLink: null,
     });
  
