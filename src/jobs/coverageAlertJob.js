@@ -110,7 +110,7 @@ async function scanSeries(nowVan) {
   const { data: masters, error } = await supabase
     .from("appointments")
     .select(
-      "id, gcal_summary, recurrence_rule, starts_at, scheduled_date, status, client_id, clients(first_name, last_name)",
+      "id, gcal_summary, recurrence_rule, starts_at, scheduled_date, status, client_id, clients!fk_appointments_clients(first_name, last_name)",
     )
     .eq("is_series_master", true)
     .not("recurrence_rule", "is", null)

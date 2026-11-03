@@ -48,7 +48,8 @@ export async function runDailyDigestJob({ date, dryRun = false } = {}) {
       .from("appointments")
       .select(
         "id, scheduled_start_time, scheduled_end_time, property_address, service_type, special_instructions, " +
-          "clients(first_name, last_name), " +
+          // FK nombrado: `clients` a secas es ambiguo desde LAB413 (clients.survey_appointment_id).
+          "clients!fk_appointments_clients(first_name, last_name), " +
           "appointment_teams(employees(id, name, email))",
       )
       .eq("scheduled_date", targetDate)

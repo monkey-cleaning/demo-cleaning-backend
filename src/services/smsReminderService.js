@@ -83,7 +83,9 @@ async function findUpcomingAppointmentsNeedingReminder() {
   let query = supabase
     .from("appointments")
     .select(
-      "id, starts_at, timezone, property_address, client_id, clients(id, first_name, phone, mobile)",
+      "id, starts_at, timezone, property_address, client_id, " +
+      // FK nombrado: embed ambiguo desde LAB413 (clients.survey_appointment_id).
+      "clients!fk_appointments_clients(id, first_name, phone, mobile)",
     )
     .gte("starts_at", windowStart)
     .lte("starts_at", windowEnd)
