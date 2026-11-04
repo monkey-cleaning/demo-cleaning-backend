@@ -30,7 +30,7 @@ export async function runInvoiceDraftJob({ dryRun = false } = {}) {
     .from("appointments")
     .select(
       "id, client_id, color_id, service_type, scheduled_date, starts_at, ends_at, " +
-        "clients(rate), appointment_teams(employee_id)",
+        "clients!fk_appointments_clients(rate), appointment_teams(employee_id)",
     )
     .is("invoice_id", null)
     .not("client_id", "is", null)
