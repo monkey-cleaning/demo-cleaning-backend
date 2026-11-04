@@ -15,6 +15,7 @@
 import cron from "node-cron";
 import { pathToFileURL } from "node:url";
 import { supabase } from "../supabaseClient.js";
+import { TZ } from "../config/timezone.js";
 import { isNonServiceEventRow } from "../services/eventClassification.js";
 import { createDraftInvoiceForCompletedAppointment } from "../services/invoiceService.js";
 
@@ -74,7 +75,7 @@ export async function runInvoiceDraftJob({ dryRun = false } = {}) {
 export function startInvoiceDraftJob() {
   // Cada hora al minuto 10: un servicio terminado pasa a borrador en ≤1 h.
   cron.schedule("10 * * * *", () => runInvoiceDraftJob(), {
-    timezone: process.env.TZ || "America/Vancouver",
+    timezone: TZ,
   });
   console.log("🧾 [InvoiceDraft] job programado (cada hora)");
 }
