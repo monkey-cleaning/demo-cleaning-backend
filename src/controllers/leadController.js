@@ -2,6 +2,7 @@ import { sendLeadToZoho } from "../services/zohoService.js";
 import {
   saveLeadToDatabase,
   enqueueCustomerEmail,
+  updateLeadRate,
 } from "../services/supabaseService.js";
 import { sendLeadNotificationEmail } from "../services/leadNotificationService.js";
 import { calculateQuote } from "../services/cleaningQuoteCalculator.js";
@@ -141,6 +142,8 @@ export async function createLead(req, res) {
           // Reutilizar el quote calculado arriba — el mismo que se persistio
           // en el lead — para que el email y la disponibilidad no diverjan.
           const calc = quote;
+          // Queda en el lead para copiarla al cliente al convertirse (no-fatal).
+          updateLeadRate(dbLead.id, calc.hourlyRate).catch(() => {});
 
           // 2️⃣ Pedir slots con la duración correcta para este cliente.
           //    LAB427: si hay bloqueo temporal de corto plazo, no sugerimos

@@ -14,6 +14,17 @@ export const supabase = createClient(supabaseUrl, supabaseKey);
    LEADS
 ====================================================== */
 
+/**
+ * Guarda en el lead la tarifa $/h cotizada (se calcula para el email, no al
+ * guardar el lead). No-fatal: si falla (p. ej. la migración 20260930_leads_rate
+ * todavía no corrió), el lead queda sin rate y se carga a mano después.
+ */
+export async function updateLeadRate(leadId, rate) {
+  if (!leadId || !Number.isFinite(rate)) return;
+  const { error } = await supabase.from("leads").update({ rate }).eq("id", leadId);
+  if (error) console.warn(`⚠️ updateLeadRate: no se pudo guardar rate del lead ${leadId}:`, error.message);
+}
+
 export async function saveLeadToDatabase(leadData) {
   const now = new Date().toISOString();
 

@@ -415,6 +415,13 @@ export async function createClient(req, res) {
         .json({ ok: false, error: "first_name or last_name is required" });
     }
 
+    // Tarifa obligatoria al crear un cliente desde el CRM: es el dato que más
+    // termina faltando en Payroll/facturación. La conversión automática de un
+    // lead (reserva en vivo) no se bloquea por esto.
+    if (fields.rate == null || !Number.isFinite(Number(fields.rate)) || Number(fields.rate) < 0) {
+      return res.status(400).json({ ok: false, error: "rate is required" });
+    }
+
     // Default status to active on creation
     if (!fields.status) fields.status = "active";
 

@@ -65,6 +65,8 @@ function mapLeadToClient(lead, bookingData = {}) {
                           ? lead.preferred_time.join(", ")
                           : lead.preferred_time || null,
     availability_windows: lead.availability_windows || null,
+    // Tarifa cotizada al lead: solo entra en un cliente NUEVO.
+    rate:             lead.rate ?? null,
     zoho_contact_id:  lead.zoho_id || null,
     notes: lead.additional_message
       ? `[Converted from lead ${lead.id}]\n${lead.additional_message}`
@@ -110,7 +112,7 @@ export async function convertLeadToClient(leadId, bookingData = {}) {
   if (lookupEmail) {
     const { data: existing } = await supabase
       .from("clients")
-      .select("id")
+      .select("id, rate")
       .ilike("email", lookupEmail)
       .maybeSingle();
 
@@ -128,6 +130,8 @@ export async function convertLeadToClient(leadId, bookingData = {}) {
         preferred_days:      clientFields.preferred_days  ?? undefined,
         preferred_time:      clientFields.preferred_time  ?? undefined,
         availability_windows: clientFields.availability_windows ?? undefined,
+        // Solo rellena si el cliente NO tiene tarifa propia; nunca pisa una cargada.
+        rate:                existing.rate == null ? (clientFields.rate ?? undefined) : undefined,
         is_converted:        true,
         converted_at:        clientFields.converted_at,
         updated_at:          clientFields.updated_at,

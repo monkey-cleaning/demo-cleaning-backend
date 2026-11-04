@@ -48,6 +48,7 @@ import seoRoutes from "./routes/seoRoutes.js";
 import { startDailyDigestJob } from "./jobs/dailyDigestJob.js";
 import { startCoverageAlertJob } from "./jobs/coverageAlertJob.js";
 import { startSeriesRenewalJob } from "./jobs/seriesRenewalJob.js";
+import { startInvoiceDraftJob } from "./jobs/invoiceDraftJob.js";
 import { startConfirmationPairingJob } from "./jobs/confirmationPairingJob.js";
 import { startConfirmationReminderJob } from "./jobs/confirmationReminderJob.js";
 import { startConfirmationReleaseJob } from "./jobs/confirmationReleaseJob.js";
@@ -220,6 +221,7 @@ startDailyDigestJob();
 startCoverageAlertJob();
 // Renueva a diario las series "Never" (sin fin) para que no se queden sin eventos.
 startSeriesRenewalJob();
+startInvoiceDraftJob();
 // startConfirmationPairingJob();
 // startConfirmationReminderJob();
 // startConfirmationReleaseJob();
