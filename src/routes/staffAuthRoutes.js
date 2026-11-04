@@ -23,59 +23,63 @@ import {
   isValidPassword,
   isValidEmail,
   isValidUsername,
+  gcalEmailForEmployee,
 } from "../services/appCredentials.js";
+import { sessionTtl, parseRememberMe } from "../services/authSession.js";
 
 const router = express.Router();
 
 // process.env se lee en cada handler, no en el load del módulo (dotenv puede
 // no haber corrido todavía según el orden de imports de index.js).
 
-// employee_id (app_credentials) → employees.email para el claim del JWT.
-async function employeeEmailFor(employeeId) {
-  if (!employeeId) return null;
-  const { data, error } = await supabase
-    .from("employees")
-    .select("email")
-    .eq("id", employeeId)
-    .maybeSingle();
-  if (error) {
-    console.error("❌ employeeEmailFor:", error.message);
-    return null;
-  }
-  return data?.email ?? null;
-}
-
 // POST /api/staff/auth/login
-// Body: { username, password }
+// Body: { username, password, rememberMe? }
+//
+// Cross-login: un admin que entra sus credenciales acá igual queda logueado,
+// con token de admin; el frontend (StaffLoginPage) lee `role` y lo redirige a
+// /admin. Mismo mecanismo en adminAuthRoutes.js, en espejo.
 router.post("/login", async (req, res) => {
   const { username, password } = req.body;
+  // LAB483 — el checkbox "Keep me signed in" del login.
+  const rememberMe = parseRememberMe(req.body?.rememberMe);
+  const { ADMIN_JWT_SECRET } = process.env;
 
   if (!username || !password) {
     return res.status(400).json({ error: "username and password required" });
   }
 
   const credential = await verifyPassword(username.toLowerCase(), password, "cleaner");
-  if (!credential) {
-    return res.status(401).json({ error: "Invalid credentials" });
-  }
+  if (credential) {
+    const gcalEmail = await gcalEmailForEmployee(credential.employee_id);
+    if (!gcalEmail) {
+      // Sin link a employees no se puede filtrar "mis eventos" — mejor negar
+      // que dejar entrar a una sesión que no va a mostrar nada.
+      console.error(
+        `[staffAuth] login: credential ${credential.username} has no linked employee email`,
+      );
+      return res.status(403).json({ error: "This account is not fully set up. Contact ops." });
+    }
 
-  const gcalEmail = await employeeEmailFor(credential.employee_id);
-  if (!gcalEmail) {
-    // Sin link a employees no se puede filtrar "mis eventos" — mejor negar
-    // que dejar entrar a una sesión que no va a mostrar nada.
-    console.error(
-      `[staffAuth] login: credential ${credential.username} has no linked employee email`,
+    const token = jwt.sign(
+      { role: "cleaner", user: credential.username, email: gcalEmail },
+      ADMIN_JWT_SECRET,
+      { expiresIn: sessionTtl("cleaner", rememberMe) },
     );
-    return res.status(403).json({ error: "This account is not fully set up. Contact ops." });
+    return res.json({ token, role: "cleaner" });
   }
 
-  const token = jwt.sign(
-    { role: "cleaner", user: credential.username, email: gcalEmail },
-    process.env.ADMIN_JWT_SECRET,
-    { expiresIn: "30d" }, // sesión larga a propósito: celular personal, no un puesto compartido
-  );
+  // Not a cleaner with these credentials — maybe an admin landed here.
+  const adminCredential = await verifyPassword(username.toLowerCase(), password, "blog-admin");
+  if (adminCredential) {
+    const token = jwt.sign(
+      { role: "blog-admin", user: adminCredential.username },
+      ADMIN_JWT_SECRET,
+      { expiresIn: sessionTtl("blog-admin", rememberMe) },
+    );
+    return res.json({ token, role: "blog-admin" });
+  }
 
-  res.json({ token });
+  return res.status(401).json({ error: "Invalid credentials" });
 });
 
 // GET /api/staff/auth/me

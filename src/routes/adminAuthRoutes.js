@@ -9,7 +9,9 @@ import {
   isValidPassword,
   isValidEmail,
   isValidUsername,
+  gcalEmailForEmployee,
 } from '../services/appCredentials.js';
+import { sessionTtl, parseRememberMe } from '../services/authSession.js';
 
 const router = express.Router();
 
@@ -24,41 +26,64 @@ const router = express.Router();
 // contraseña en su perfil (PATCH /profile) y recuperarla por mail
 // (/api/auth/forgot-password). Reemplaza al mapa TEST_USERS. El modo legacy
 // (password única, sin username) queda intacto, es un camino aparte.
+//
+// Cross-login: si el username no matchea ningún admin pero SÍ un cleaner, se
+// lo loguea igual (token de cleaner) en vez de rechazarlo; el frontend
+// (AdminLoginPage) lee `role` en la respuesta y lo manda a /staff. Solo aplica
+// al modo multiusuario; el modo legacy no tiene forma de identificar a qué
+// cleaner correspondería.
 router.post('/login', async (req, res) => {
   const { username, password } = req.body;
   const { ADMIN_BLOG_PASSWORD, ADMIN_JWT_SECRET } = process.env;
+  // LAB483 — el checkbox "Keep me signed in" del login.
+  const rememberMe = parseRememberMe(req.body?.rememberMe);
 
   if (!password) {
     return res.status(400).json({ error: 'Password required' });
   }
 
-  let authenticated = false;
-  let userLabel = 'admin';
-
   if (username) {
     const credential = await verifyPassword(username.toLowerCase(), password, 'blog-admin');
     if (credential) {
-      authenticated = true;
-      userLabel = credential.username;
+      const token = jwt.sign(
+        { role: 'blog-admin', user: credential.username },
+        ADMIN_JWT_SECRET,
+        { expiresIn: sessionTtl('blog-admin', rememberMe) }
+      );
+      return res.json({ token, role: 'blog-admin' });
     }
-  } else {
-    // Modo legacy: password única
-    if (ADMIN_BLOG_PASSWORD && password === ADMIN_BLOG_PASSWORD) {
-      authenticated = true;
-    }
-  }
 
-  if (!authenticated) {
+    const cleanerCredential = await verifyPassword(username.toLowerCase(), password, 'cleaner');
+    if (cleanerCredential) {
+      const gcalEmail = await gcalEmailForEmployee(cleanerCredential.employee_id);
+      if (!gcalEmail) {
+        console.error(
+          `[adminAuth] cross-login: credential ${cleanerCredential.username} has no linked employee email`,
+        );
+        return res.status(403).json({ error: 'This account is not fully set up. Contact ops.' });
+      }
+      const token = jwt.sign(
+        { role: 'cleaner', user: cleanerCredential.username, email: gcalEmail },
+        ADMIN_JWT_SECRET,
+        { expiresIn: sessionTtl('cleaner', rememberMe) },
+      );
+      return res.json({ token, role: 'cleaner' });
+    }
+
     return res.status(401).json({ error: 'Invalid credentials' });
   }
 
-  const token = jwt.sign(
-    { role: 'blog-admin', user: userLabel },
-    ADMIN_JWT_SECRET,
-    { expiresIn: '7d' }
-  );
+  // Modo legacy: password única, sin username.
+  if (ADMIN_BLOG_PASSWORD && password === ADMIN_BLOG_PASSWORD) {
+    const token = jwt.sign(
+      { role: 'blog-admin', user: 'admin' },
+      ADMIN_JWT_SECRET,
+      { expiresIn: sessionTtl('blog-admin', rememberMe) }
+    );
+    return res.json({ token, role: 'blog-admin' });
+  }
 
-  res.json({ token });
+  return res.status(401).json({ error: 'Invalid credentials' });
 });
 
 // GET /api/admin/auth/me
