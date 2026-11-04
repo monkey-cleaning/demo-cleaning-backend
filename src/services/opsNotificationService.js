@@ -775,3 +775,79 @@ export async function sendStaffComplaintAlert({ employeeName, message }) {
     label: "StaffComplaintAlert",
   });
 }
+/**
+ * LAB462 — un cleaner mandó fotos + comentario a la oficina desde un evento
+ * ("Other photos"). Lo dispara centralSubmissionsController.createCentralSubmission
+ * después de guardar el envío; nunca lanza (el envío ya está guardado).
+ *
+ * @param {{ id: string, sentBy?: string|null, clientName?: string|null,
+ *   eventSummary?: string|null, eventStart?: string|null, location?: string|null,
+ *   comment?: string|null, photos: string[] }} submission
+ */
+export async function sendCentralSubmissionAlert(submission) {
+  try {
+    const recipients = await opsRecipients();
+    const photos = submission.photos ?? [];
+    const who = submission.sentBy || "A cleaner";
+    const what = submission.clientName || submission.eventSummary || "a visit";
+    const when = submission.eventStart
+      ? DateTime.fromISO(submission.eventStart, { zone: TZ }).toFormat("cccc, LLLL d 'at' h:mm a")
+      : null;
+    const frontend = (process.env.FRONTEND_URL || "").replace(/\/+$/, "");
+
+    const rows = [
+      ["Client", submission.clientName],
+      ["Visit", submission.eventSummary],
+      ["When", when],
+      ["Address", submission.location],
+    ]
+      .filter(([, v]) => v)
+      .map(
+        ([k, v]) => `
+      <tr>
+        <td style="padding:8px 0;border-bottom:1px solid #f1f5f9;width:26%;vertical-align:top;">
+          <span style="font-size:12px;color:#94a3b8;font-weight:600;">${k}</span>
+        </td>
+        <td style="padding:8px 0;border-bottom:1px solid #f1f5f9;vertical-align:top;">
+          <span style="font-size:13px;color:#0d1b3e;">${escapeHtml(String(v))}</span>
+        </td>
+      </tr>`,
+      )
+      .join("");
+
+    const thumbs = photos
+      .slice(0, 6)
+      .map(
+        (url) =>
+          `<a href="${escapeHtml(url)}"><img src="${escapeHtml(url)}" width="120" height="120" style="object-fit:cover;border-radius:8px;border:1px solid #e2e8f0;margin:0 6px 6px 0;" alt="" /></a>`,
+      )
+      .join("");
+
+    const bodyHtml = `
+    <p style="margin:0 0 4px;font-size:11px;font-weight:700;color:#e11d48;letter-spacing:1px;text-transform:uppercase;">Received from cleaners</p>
+    <h1 style="margin:0 0 4px;font-size:20px;color:#0d1b3e;">${escapeHtml(who)} sent ${photos.length} photo${photos.length === 1 ? "" : "s"}</h1>
+    <p style="margin:0 0 16px;font-size:14px;color:#64748b;">From ${escapeHtml(what)}</p>
+    ${
+      submission.comment
+        ? `<p style="margin:0 0 16px;padding:12px 14px;background:#f8fafc;border-left:3px solid #0d1b3e;font-size:14px;color:#0d1b3e;white-space:pre-line;">${escapeHtml(submission.comment)}</p>`
+        : ""
+    }
+    <table width="100%" cellpadding="0" cellspacing="0">${rows}</table>
+    <div style="margin-top:16px;">${thumbs}</div>
+    ${
+      frontend
+        ? `<p style="margin:16px 0 0;font-size:12px;color:#94a3b8;"><a href="${frontend}/admin/checklists" style="color:#2563eb;">Open in the dashboard</a> to see every photo and mark it as reviewed.</p>`
+        : ""
+    }
+  `;
+
+    await sendOpsEmail({
+      recipients,
+      subject: `Photos from ${who}: ${what}`,
+      bodyHtml,
+      label: "CentralSubmissionAlert",
+    });
+  } catch (err) {
+    console.error("❌ [CentralSubmissionAlert] failed:", err.message);
+  }
+}

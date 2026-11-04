@@ -11,6 +11,7 @@
 import { DateTime } from "luxon";
 import { supabase } from "../supabaseClient.js";
 import { sanitizeNotes } from "../services/employeeNotificationService.js";
+import { isNonServiceEventRow, isLunchEventSummary } from "../services/eventClassification.js";
 
 import { TZ } from "../config/timezone.js";
 
@@ -50,6 +51,8 @@ function toStaffShape(row, selfId) {
     notes: sanitizeNotes(row.special_instructions),
     teammates,
     isRecurring: row.series_id != null,
+    // LAB462 — lunch, bloqueos, etc.: sin checklist ni "Other photos".
+    isNonService: isNonServiceEventRow(row) || isLunchEventSummary(row.gcal_summary),
     // Clave para agrupar las notas de "próximo cleaner" (event_notes.series_key,
     // ver eventNotesController.js): el maestro de la serie si es recurrente, la
     // propia instancia si es un evento suelto.
@@ -82,7 +85,7 @@ export async function getStaffCalendarEvents(req, res) {
     const { data: rows, error } = await supabase
       .from("appointments")
       .select(
-        "id, gcal_summary, special_instructions, property_address, starts_at, ends_at, scheduled_date, series_id, status, " +
+        "id, gcal_summary, color_id, special_instructions, property_address, starts_at, ends_at, scheduled_date, series_id, status, " +
           "appointment_teams(employee_id, employees(id, name))",
       )
       .gte("starts_at", timeMin)
