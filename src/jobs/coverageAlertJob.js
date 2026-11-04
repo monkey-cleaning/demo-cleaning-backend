@@ -57,11 +57,15 @@ const clientName = (c) =>
 
 function cadenceLabel(rec) {
   if (!rec) return "?";
-  if (rec.freq === "MONTHLY") return rec.interval > 1 ? `every ${rec.interval} months` : "monthly";
-  const days = 7 * (rec.interval || 1);
-  if (days === 7) return "weekly";
-  if (days === 14) return "biweekly";
-  return `every ${days} days`;
+  if (rec.freq === "MONTHLY") {
+    const nth = rec.monthly?.type === "nthWeekday" ? " (by weekday)" : "";
+    return (rec.interval > 1 ? `every ${rec.interval} months` : "monthly") + nth;
+  }
+  const weeks = rec.interval || 1;
+  const multi = rec.byDay?.length > 1 ? ` (${rec.byDay.length} days a week)` : "";
+  if (weeks === 1) return "weekly" + multi;
+  if (weeks === 2) return "biweekly" + multi;
+  return `every ${weeks} weeks` + multi;
 }
 
 // ── (a) eventos de mañana sin cleaner ──────────────────────────────────────

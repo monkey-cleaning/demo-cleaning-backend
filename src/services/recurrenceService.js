@@ -168,6 +168,7 @@ export function describeRecurrence(raw) {
     monthly,
     endType,
     count: raw.count ?? null,
-    until: raw.until ?? null,
+    // El panel espera una fecha (yyyy-MM-dd), no el ISO con hora que se guarda.
+    until: raw.until ? DateTime.fromISO(raw.until, { zone: TZ }).toISODate() : null,
   };
 }

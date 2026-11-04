@@ -129,3 +129,9 @@ test("describeRecurrence gives the panel its preset", () => {
   assert.equal(describeRecurrence(ser({ freq: "MONTHLY" })).preset, "CUSTOM");
   assert.equal(describeRecurrence(ser({ freq: "WEEKLY", count: 4 })).endType, "count");
 });
+
+test("describeRecurrence hands the panel a plain end date", () => {
+  const d = describeRecurrence(ser({ freq: "WEEKLY", until: "2027-02-10T23:59:00-07:00" }));
+  assert.equal(d.endType, "until");
+  assert.equal(d.until, "2027-02-10");
+});
