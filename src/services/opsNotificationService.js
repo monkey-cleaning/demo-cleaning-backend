@@ -616,16 +616,38 @@ function coverageTable(rows, cols) {
  *   gaps: Array<{ client: string, series: string, missingDate: string, kind: string, actionable: boolean }>,
  * }} p
  */
-export async function sendCoverageAlert({ dateLabel, unassigned, endingSoon, gaps }) {
+export async function sendCoverageAlert({
+  dateLabel,
+  unassigned,
+  noCoverage,
+  endingSoon,
+  gaps,
+  overlaps,
+}) {
   const recipients = await opsRecipients({
     extraEnvKey: "COVERAGE_ALERT_EXTRA_EMAILS",
   });
 
   const total =
-    (unassigned?.length || 0) + (endingSoon?.length || 0) + (gaps?.length || 0);
+    (unassigned?.length || 0) +
+    (noCoverage?.length || 0) +
+    (endingSoon?.length || 0) +
+    (gaps?.length || 0) +
+    (overlaps?.length || 0);
   if (!total) return;
 
   const sections = [];
+
+  if (noCoverage?.length) {
+    sections.push(`
+      <h2 style="margin:20px 0 4px;font-size:15px;color:#e11d48;">🔴 clients with no upcoming service (${noCoverage.length})</h2>
+      <p style="margin:0 0 4px;font-size:13px;color:#64748b;">Regular clients with a recurring series and nothing booked ahead — the series is probably broken, deleted or expired.</p>
+      ${coverageTable(noCoverage, [
+        { label: "Client", get: (r) => r.client },
+        { label: "Services (150 d)", get: (r) => r.completed },
+        { label: "Last service", get: (r) => r.lastService },
+      ])}`);
+  }
 
   if (unassigned?.length) {
     sections.push(`
@@ -660,6 +682,17 @@ export async function sendCoverageAlert({ dateLabel, unassigned, endingSoon, gap
         { label: "Series", get: (r) => r.series },
         { label: "Missing date", get: (r) => r.missingDate },
         { label: "Kind", get: (r) => (r.actionable ? `${r.kind} (act now)` : r.kind) },
+      ])}`);
+  }
+
+  if (overlaps?.length) {
+    sections.push(`
+      <h2 style="margin:20px 0 4px;font-size:15px;color:#7c3aed;">🟣 overlapping series (${overlaps.length})</h2>
+      <p style="margin:0 0 4px;font-size:13px;color:#64748b;">Two or more live series for the same client land on nearly the same days — usually a new series created without cutting the old one. If it is intentional, silence it in the Coverage panel.</p>
+      ${coverageTable(overlaps, [
+        { label: "Client", get: (r) => r.client },
+        { label: "What", get: (r) => r.detail },
+        { label: "Series", get: (r) => r.series },
       ])}`);
   }
 

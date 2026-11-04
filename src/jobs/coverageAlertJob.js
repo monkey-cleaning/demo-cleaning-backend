@@ -5,24 +5,23 @@
 // recurringCoverageMonitor) — sin Google Calendar: todo sale de `appointments`
 // + `appointment_teams` + la recurrencia local (recurrenceService.js).
 //
-// Tres señales, en un solo mail a ops (sendCoverageAlert):
+// Un solo mail a ops (sendCoverageAlert) con:
 //
 //   🔴 unassigned  — evento de servicio de MAÑANA sin ningún cleaner activo en
 //                    appointment_teams. Sin attendees no hay registro de quién
 //                    lo hizo → rompe la liquidación de la quincena.
-//   🟠 endingSoon  — serie recurrente viva cuyo fin real (count/until del RRULE)
-//                    cae dentro de COVERAGE_ENDING_SOON_DAYS o le quedan
-//                    <= COVERAGE_ENDING_SOON_TURNS ocurrencias. Series infinitas
-//                    (sin count ni until) se ignoran.
-//   🟡 gaps        — una fecha que el RRULE dice que debería tener un
-//                    appointment de esa serie y NO existe fila (borrado por
-//                    accidente en el medio → accionable si es pronto), o la
-//                    instancia está cancelada (salteo deliberado → solo se
-//                    reporta si hay 2+ seguidos).
+//   🔴 noCoverage  — cliente con servicio regular y una serie, sin NADA futuro.
+//   🟠 endingSoon  — serie con fin explícito (count/until) cerca.
+//   🟡 gaps        — hueco accionable dentro de una serie viva (los salteos
+//                    deliberados son informativos y no se mandan).
+//   🟣 overlaps    — series vivas del mismo cliente que se pisan.
 //
-// Reevalúa el estado cada corrida (recordatorio persistente, sin tabla de
-// estado). Cron diario ~2 h antes del digest, detrás de una guarda para no
-// correr en cada import.
+// Las cuatro últimas las calcula services/coverageScan.js (el mismo escaneo que
+// alimenta el panel "Coverage" del admin) y respetan las supresiones: lo que el
+// admin marca como "resuelto" o "silenciado" deja de llegar por mail.
+//
+// Reevalúa el estado cada corrida (recordatorio persistente). Cron diario ~2 h
+// antes del digest.
 //
 // CLI:
 //   node src/jobs/coverageAlertJob.js
@@ -35,38 +34,12 @@ import { pathToFileURL } from "node:url";
 import { DateTime } from "luxon";
 import { supabase } from "../supabaseClient.js";
 import { isNonServiceEventRow } from "../services/eventClassification.js";
-import {
-  deserializeRecurrence,
-  expandRecurrenceDates,
-} from "../services/recurrenceService.js";
+import { scanCoverage } from "../services/coverageScan.js";
 import { DIGEST_CUTOFF_HOUR } from "../services/employeeNotificationService.js";
 import { sendCoverageAlert } from "../services/opsNotificationService.js";
 
 import { TZ } from "../config/timezone.js";
 const ALERT_HOUR = Math.min(23, Math.max(0, DIGEST_CUTOFF_HOUR - 2));
-
-const ENDING_SOON_TURNS = Number(process.env.COVERAGE_ENDING_SOON_TURNS || 3);
-const ENDING_SOON_DAYS = Number(process.env.COVERAGE_ENDING_SOON_DAYS || 21);
-const HORIZON_DAYS = Number(process.env.COVERAGE_HORIZON_DAYS || 90);
-const ACTIONABLE_DAYS = Number(process.env.COVERAGE_ACTIONABLE_DAYS || 35);
-
-const iso = (dt) => dt.toISODate();
-const clientName = (c) =>
-  [c?.first_name, c?.last_name].filter(Boolean).join(" ").trim() ||
-  "(unnamed client)";
-
-function cadenceLabel(rec) {
-  if (!rec) return "?";
-  if (rec.freq === "MONTHLY") {
-    const nth = rec.monthly?.type === "nthWeekday" ? " (by weekday)" : "";
-    return (rec.interval > 1 ? `every ${rec.interval} months` : "monthly") + nth;
-  }
-  const weeks = rec.interval || 1;
-  const multi = rec.byDay?.length > 1 ? ` (${rec.byDay.length} days a week)` : "";
-  if (weeks === 1) return "weekly" + multi;
-  if (weeks === 2) return "biweekly" + multi;
-  return `every ${weeks} weeks` + multi;
-}
 
 // ── (a) eventos de mañana sin cleaner ──────────────────────────────────────
 async function findUnassignedTomorrow(dateIso) {
@@ -109,99 +82,34 @@ async function findUnassignedTomorrow(dateIso) {
   return out.sort((a, b) => a._sortKey - b._sortKey);
 }
 
-// ── (b) + (c) sobre series vivas ───────────────────────────────────────────
-async function scanSeries(nowVan) {
-  const { data: masters, error } = await supabase
-    .from("appointments")
-    .select(
-      "id, gcal_summary, recurrence_rule, starts_at, scheduled_date, status, client_id, clients!fk_appointments_clients(first_name, last_name)",
-    )
-    .eq("is_series_master", true)
-    .not("recurrence_rule", "is", null)
-    .neq("status", "cancelled");
-  if (error) throw new Error(`series query: ${error.message}`);
-
-  const endingSoon = [];
-  const gaps = [];
-  const horizonEnd = nowVan.plus({ days: HORIZON_DAYS });
-  const actionableEnd = nowVan.plus({ days: ACTIONABLE_DAYS });
-
-  for (const m of masters ?? []) {
-    const rec = deserializeRecurrence(m.recurrence_rule);
-    if (!rec) continue;
-    const dtstartIso = m.starts_at || `${m.scheduled_date}T00:00:00`;
-
-    let allDates;
-    try {
-      allDates = expandRecurrenceDates(rec, dtstartIso).map((d) =>
-        DateTime.fromJSDate(d).setZone(TZ),
-      );
-    } catch {
-      continue;
-    }
-    const future = allDates.filter((d) => d.startOf("day") >= nowVan.startOf("day"));
-    const label = clientName(m.clients);
-
-    // (b) endingSoon — solo series con fin explícito (count o until)
-    const hasExplicitEnd = rec.count != null || rec.until != null;
-    if (hasExplicitEnd && future.length > 0) {
-      const last = future[future.length - 1];
-      if (future.length <= ENDING_SOON_TURNS || last <= nowVan.plus({ days: ENDING_SOON_DAYS })) {
-        endingSoon.push({
-          client: label,
-          cadence: cadenceLabel(rec),
-          remaining: future.length,
-          lastDate: iso(last),
-        });
-      }
-    }
-
-    // (c) gaps — fechas esperadas dentro del horizonte sin fila (o canceladas)
-    const expectedInHorizon = future.filter((d) => d <= horizonEnd);
-    if (!expectedInHorizon.length) continue;
-
-    const { data: instances } = await supabase
-      .from("appointments")
-      .select("scheduled_date, status")
-      .eq("series_id", m.id)
-      .gte("scheduled_date", iso(nowVan))
-      .lte("scheduled_date", iso(horizonEnd));
-    const byDate = new Map(
-      (instances ?? []).map((r) => [r.scheduled_date, r.status]),
-    );
-
-    let consecutiveCancelled = 0;
-    for (const d of expectedInHorizon) {
-      const key = iso(d);
-      const st = byDate.get(key);
-      if (st === undefined) {
-        gaps.push({
-          client: label,
-          series: m.gcal_summary || "(no title)",
-          missingDate: key,
-          kind: "HOLE",
-          actionable: d <= actionableEnd,
-        });
-        consecutiveCancelled = 0;
-      } else if (st === "cancelled") {
-        consecutiveCancelled++;
-        if (consecutiveCancelled >= 2) {
-          gaps.push({
-            client: label,
-            series: m.gcal_summary || "(no title)",
-            missingDate: key,
-            kind: "SKIP x" + consecutiveCancelled,
-            actionable: false,
-          });
-        }
-      } else {
-        consecutiveCancelled = 0;
-      }
-    }
-  }
-
-  return { endingSoon, gaps };
-}
+// Forma que espera el mail (tablas planas).
+const emailNoCoverage = (f) => ({
+  client: f.name,
+  completed: f.completed150d,
+  lastService: f.lastService || "?",
+});
+const emailEndingSoon = (f) => ({
+  client: f.name,
+  cadence: f.rrule,
+  remaining: f.remaining,
+  lastDate: f.lastInstance,
+});
+const emailGap = (f) => ({
+  client: f.name,
+  series: f.seriesTitle || "(no title)",
+  missingDate: f.missing.join(", "),
+  kind: "HOLE",
+  actionable: f.actionable,
+});
+const emailOverlap = (f) => ({
+  client: f.name,
+  detail:
+    `${f.series.length} live series, each ${f.series[0]?.rrule || "?"}, ` +
+    (f.effectiveEveryDays
+      ? `together every ~${f.effectiveEveryDays} days`
+      : "on nearly the same days"),
+  series: f.series.map((s) => `${s.title?.trim() || "?"} (next ${s.nextDates.join(", ")})`).join(" | "),
+});
 
 /**
  * @param {{ date?: string, dryRun?: boolean }} opts
@@ -216,36 +124,48 @@ export async function runCoverageAlertJob({ date, dryRun = false } = {}) {
   );
 
   try {
-    const [unassigned, series] = await Promise.all([
+    const [unassigned, scan] = await Promise.all([
       findUnassignedTomorrow(targetIso),
-      scanSeries(nowVan),
+      scanCoverage(),
     ]);
-    const { endingSoon, gaps } = series;
+    const noCoverage = scan.noCoverage.map(emailNoCoverage);
+    const endingSoon = scan.endingSoon.map(emailEndingSoon);
+    const gaps = scan.midGaps.filter((g) => g.actionable).map(emailGap);
+    const overlaps = scan.overlaps.map(emailOverlap);
 
+    const counts = {
+      unassigned: unassigned.length,
+      noCoverage: noCoverage.length,
+      endingSoon: endingSoon.length,
+      gaps: gaps.length,
+      overlaps: overlaps.length,
+    };
     console.log(
-      `[CoverageAlert] ${targetIso} — unassigned=${unassigned.length} endingSoon=${endingSoon.length} gaps=${gaps.length}`,
+      `[CoverageAlert] ${targetIso} — ${Object.entries(counts).map(([k, v]) => `${k}=${v}`).join(" ")} suppressed=${scan.suppressed.length}`,
     );
     for (const u of unassigned) console.log(`   🔴 ${u.timeLabel}  ${u.summary}`);
-    for (const e of endingSoon)
-      console.log(`   🟠 ${e.client} — ${e.remaining} left, last ${e.lastDate}`);
-    for (const g of gaps)
-      console.log(`   🟡 ${g.client} — ${g.missingDate} ${g.kind}${g.actionable ? " (act now)" : ""}`);
+    for (const f of scan.noCoverage) console.log(`   🔴 ${f.name} — no future service, last ${f.lastService}`);
+    for (const f of scan.endingSoon) console.log(`   🟠 ${f.name} — ${f.remaining} left, last ${f.lastInstance}`);
+    for (const f of scan.midGaps.filter((g) => g.actionable)) console.log(`   🟡 ${f.name} — ${f.missing.join(", ")}`);
+    for (const f of scan.overlaps) console.log(`   🟣 ${f.name} — ${f.series.length} overlapping series`);
 
-    const total = unassigned.length + endingSoon.length + gaps.length;
+    const total = Object.values(counts).reduce((a, b) => a + b, 0);
     if (dryRun) {
       console.log("[CoverageAlert] (dry-run) no se manda mail.");
-      return { date: targetIso, unassigned: unassigned.length, endingSoon: endingSoon.length, gaps: gaps.length, dryRun: true };
+      return { date: targetIso, ...counts, dryRun: true };
     }
-    if (total === 0) return { date: targetIso, unassigned: 0, endingSoon: 0, gaps: 0 };
+    if (total === 0) return { date: targetIso, ...counts };
 
     await sendCoverageAlert({
       dateLabel,
       unassigned: unassigned.map(({ _sortKey, ...r }) => r),
+      noCoverage,
       endingSoon,
       gaps,
+      overlaps,
     });
     console.log(`✅ [CoverageAlert] alerta enviada — ${total} item(s).`);
-    return { date: targetIso, unassigned: unassigned.length, endingSoon: endingSoon.length, gaps: gaps.length };
+    return { date: targetIso, ...counts };
   } catch (e) {
     console.error("❌ [CoverageAlert] job failed:", e.message);
     return { date: targetIso, error: e.message };
