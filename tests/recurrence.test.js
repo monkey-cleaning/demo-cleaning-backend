@@ -9,6 +9,8 @@ import {
   deserializeRecurrence,
   expandRecurrenceDates,
   describeRecurrence,
+  datesToRenew,
+  buildInstanceRows,
   assertRuleFitsStart,
   RecurrenceInputError,
 } from "../src/services/recurrenceService.js";
@@ -134,4 +136,49 @@ test("describeRecurrence hands the panel a plain end date", () => {
   const d = describeRecurrence(ser({ freq: "WEEKLY", until: "2027-02-10T23:59:00-07:00" }));
   assert.equal(d.endType, "until");
   assert.equal(d.until, "2027-02-10");
+});
+
+const NOW = DateTime.fromISO("2026-12-01T09:00", { zone: TZ });
+const local = (d) => DateTime.fromJSDate(d).setZone(TZ).toFormat("yyyy-MM-dd HH:mm");
+
+test("renewal tops a Never series up to the horizon, after its last row only", () => {
+  const rec = ser({ freq: "WEEKLY", endless: true });
+  const start = DateTime.fromISO("2026-06-02T10:00", { zone: TZ }).toISO();
+  const out = datesToRenew(rec, start, "2027-05-25", { now: NOW, horizonMonths: 6 });
+  assert.equal(local(out[0]), "2027-06-01 10:00");
+  assert.equal(local(out.at(-1)), "2027-06-01 10:00");
+  assert.ok(out.every((d) => DateTime.fromJSDate(d).setZone(TZ).toISODate() > "2027-05-25"));
+  assert.ok(out.every((d) => DateTime.fromJSDate(d).setZone(TZ) <= NOW.plus({ months: 6 }).endOf("day")));
+});
+
+test("renewal does nothing for fixed-end series or when the series already reaches the horizon", () => {
+  const start = DateTime.fromISO("2026-12-01T10:00", { zone: TZ }).toISO();
+  assert.deepEqual(datesToRenew(ser({ freq: "WEEKLY", count: 5 }), start, "2026-12-01", { now: NOW }), []);
+  assert.deepEqual(datesToRenew(ser({ freq: "WEEKLY", until: "2027-12-01" }), start, "2026-12-01", { now: NOW }), []);
+  assert.deepEqual(datesToRenew(ser({ freq: "WEEKLY", endless: true }), start, "2029-01-01", { now: NOW, horizonMonths: 18 }), []);
+});
+
+test("renewal does not resurrect a date the admin removed in the middle", () => {
+  const rec = ser({ freq: "WEEKLY", endless: true });
+  const start = DateTime.fromISO("2026-12-01T10:00", { zone: TZ }).toISO();
+  // última fila existente: 2027-03-02; lo anterior (aunque falte alguna) no se toca
+  const out = datesToRenew(rec, start, "2027-03-02", { now: NOW, horizonMonths: 4 });
+  assert.equal(local(out[0]), "2027-03-09 10:00");
+});
+
+test("instance rows keep the master's duration and wall-clock time", () => {
+  const master = {
+    id: "m1",
+    starts_at: DateTime.fromISO("2026-12-01T10:00", { zone: TZ }).toUTC().toISO(),
+    ends_at: DateTime.fromISO("2026-12-01T12:30", { zone: TZ }).toUTC().toISO(),
+  };
+  const dates = expandRecurrenceDates(ser({ freq: "WEEKLY", count: 3 }), master.starts_at);
+  const rows = buildInstanceRows(master, dates.slice(1), { client_id: "c1" });
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map((r) => r.scheduled_date), ["2026-12-08", "2026-12-15"]);
+  assert.equal(rows[0].scheduled_start_time, "10:00:00");
+  assert.equal(rows[0].scheduled_end_time, "12:30:00");
+  assert.equal(rows[0].series_id, "m1");
+  assert.equal(rows[0].is_series_master, false);
+  assert.equal(rows[0].client_id, "c1");
 });

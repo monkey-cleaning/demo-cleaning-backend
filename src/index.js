@@ -45,6 +45,7 @@ import { generateAvailability } from "./services/availabilityGeneratorService.js
 import seoRoutes from "./routes/seoRoutes.js";
 import { startDailyDigestJob } from "./jobs/dailyDigestJob.js";
 import { startCoverageAlertJob } from "./jobs/coverageAlertJob.js";
+import { startSeriesRenewalJob } from "./jobs/seriesRenewalJob.js";
 import { startConfirmationPairingJob } from "./jobs/confirmationPairingJob.js";
 import { startConfirmationReminderJob } from "./jobs/confirmationReminderJob.js";
 import { startConfirmationReleaseJob } from "./jobs/confirmationReleaseJob.js";
@@ -213,6 +214,8 @@ startDailyDigestJob();
 // Alerta diaria de cobertura: eventos de mañana sin cleaner + series recurrentes
 // por terminar + huecos en el medio de una serie. Solo lee y manda mail a ops.
 startCoverageAlertJob();
+// Renueva a diario las series "Never" (sin fin) para que no se queden sin eventos.
+startSeriesRenewalJob();
 // startConfirmationPairingJob();
 // startConfirmationReminderJob();
 // startConfirmationReleaseJob();

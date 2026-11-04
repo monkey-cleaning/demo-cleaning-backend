@@ -27,6 +27,7 @@ import {
   serializeRecurrence,
   deserializeRecurrence,
   expandRecurrenceDates,
+  buildInstanceRows,
   extractPattern,
   describeRecurrence,
   assertRuleFitsStart,
@@ -478,30 +479,7 @@ async function materializeSeries(masterRow, recurrence, baseFields) {
   const rest = dates.slice(1);
   if (!rest.length) return [masterRow];
 
-  const durationMs =
-    DateTime.fromISO(masterRow.ends_at).toMillis() -
-    DateTime.fromISO(masterRow.starts_at).toMillis();
-
-  const rows = rest.map((date) => {
-    const startsAt = DateTime.fromJSDate(date).toUTC().toISO();
-    const endsAt = DateTime.fromJSDate(date)
-      .toUTC()
-      .plus({ milliseconds: durationMs })
-      .toISO();
-    const startDt = DateTime.fromISO(startsAt, { zone: TZ });
-    const endDt = DateTime.fromISO(endsAt, { zone: TZ });
-    return {
-      ...baseFields,
-      starts_at: startsAt,
-      ends_at: endsAt,
-      scheduled_date: startDt.toISODate(),
-      scheduled_start_time: startDt.toFormat("HH:mm:ss"),
-      scheduled_end_time: endDt.toFormat("HH:mm:ss"),
-      is_series_master: false,
-      series_id: masterRow.id,
-      status: "pending",
-    };
-  });
+  const rows = buildInstanceRows(masterRow, rest, baseFields);
 
   const { data: inserted, error } = await supabase
     .from("appointments")

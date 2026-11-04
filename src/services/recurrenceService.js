@@ -129,6 +129,54 @@ export function expandRecurrenceDates(
   return rule.all((date) => date <= hardCap).map(fromWallClock);
 }
 
+// Filas de instancias (todas menos el maestro) para una lista de fechas. La
+// duración sale del propio maestro; los campos del evento (cliente, dirección,
+// color, equipo…) se copian de `baseFields`. Lo usan la creación de la serie y
+// la renovación de las series "Never".
+export function buildInstanceRows(masterRow, dates, baseFields) {
+  const durationMs =
+    DateTime.fromISO(masterRow.ends_at).toMillis() -
+    DateTime.fromISO(masterRow.starts_at).toMillis();
+
+  return dates.map((date) => {
+    const start = DateTime.fromJSDate(date).toUTC();
+    const end = start.plus({ milliseconds: durationMs });
+    const startDt = start.setZone(TZ);
+    const endDt = end.setZone(TZ);
+    return {
+      ...baseFields,
+      starts_at: start.toISO(),
+      ends_at: end.toISO(),
+      scheduled_date: startDt.toISODate(),
+      scheduled_start_time: startDt.toFormat("HH:mm:ss"),
+      scheduled_end_time: endDt.toFormat("HH:mm:ss"),
+      is_series_master: false,
+      series_id: masterRow.id,
+      status: "pending",
+    };
+  });
+}
+
+// Fechas que le faltan a una serie "Never" para llegar al horizonte: las que
+// caen después de la última instancia que ya existe (cancelada o no, así no se
+// resucita una fecha que el admin borró en el medio) y hasta `horizonMonths`
+// desde hoy. Una serie con fin explícito nunca devuelve nada.
+export function datesToRenew(
+  recurrence,
+  dtstartIso,
+  lastScheduledDate,
+  { now = DateTime.now().setZone(TZ), horizonMonths = 18 } = {},
+) {
+  if (!recurrence?.endless) return [];
+  const horizonEnd = now.plus({ months: horizonMonths }).endOf("day");
+  const start = DateTime.fromISO(dtstartIso, { zone: TZ });
+  const months = Math.max(1, Math.ceil(horizonEnd.diff(start, "months").months) + 1);
+  return expandRecurrenceDates(recurrence, dtstartIso, { materializationCapMonths: months }).filter((d) => {
+    const local = DateTime.fromJSDate(d).setZone(TZ);
+    return local <= horizonEnd && (!lastScheduledDate || local.toISODate() > lastScheduledDate);
+  });
+}
+
 // Patrón "crudo" de una serie (sin fin), para heredarlo al hacer split de
 // serie en scope=following: conserva byDay/monthly, que antes se perdían.
 export function extractPattern(recurrence) {
