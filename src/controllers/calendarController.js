@@ -27,7 +27,10 @@ import {
   serializeRecurrence,
   deserializeRecurrence,
   expandRecurrenceDates,
-  extractFreqInterval,
+  extractPattern,
+  describeRecurrence,
+  assertRuleFitsStart,
+  RecurrenceInputError,
 } from "../services/recurrenceService.js";
 import {
   sendUrgentAssignmentEmail,
@@ -562,6 +565,7 @@ export async function createCalendarEvent(req, res) {
     let recurrenceRuleJson = null;
     let normalizedRecurrence = null;
     if (recurrence) {
+      assertRuleFitsStart(recurrence, startDt.toISODate());
       recurrenceRuleJson = serializeRecurrence(recurrence);
       normalizedRecurrence = deserializeRecurrence(recurrenceRuleJson);
     }
@@ -602,6 +606,9 @@ export async function createCalendarEvent(req, res) {
 
     return res.status(201).json({ ok: true, event: mapRow(masterRow) });
   } catch (e) {
+    if (e instanceof RecurrenceInputError) {
+      return res.status(400).json({ ok: false, error: e.message });
+    }
     console.error("❌ createCalendarEvent:", e.message);
     return res.status(500).json({ ok: false, error: e.message });
   }
@@ -652,21 +659,14 @@ export async function updateCalendarEvent(req, res) {
     }
 
     const isPartOfSeries = !!existing.series_id;
-    if (recurrence !== undefined) {
-      if (scope === "following") {
-        return res.status(400).json({
-          ok: false,
-          error:
-            'Changing recurrence isn\'t supported with "This and following events". Choose "All recurring events" instead.',
-        });
-      }
-      if (isPartOfSeries && scope !== "all") {
-        return res.status(400).json({
-          ok: false,
-          error:
-            'To change how often this event repeats, choose "All recurring events".',
-        });
-      }
+    if (recurrence !== undefined && isPartOfSeries && scope !== "following") {
+      // Cambiar el patrón de una serie parte la serie en esta ocurrencia: lo
+      // anterior queda como estaba y lo que sigue se regenera con el patrón nuevo.
+      return res.status(400).json({
+        ok: false,
+        error:
+          'To change how often this event repeats, choose "This and following events".',
+      });
     }
 
     const resolvedColorId =
@@ -706,7 +706,50 @@ export async function updateCalendarEvent(req, res) {
       const masterId = existing.series_id;
       const masterRow = followingMaster;
       const oldRecurrence = followingRecurrence;
-      const { freq, interval } = extractFreqInterval(oldRecurrence);
+      const oldPattern = extractPattern(oldRecurrence);
+      const newStartDate = DateTime.fromISO(startIso, { zone: TZ }).toISODate();
+
+      // ¿Viene un patrón nuevo (LAB617)? Entonces la serie nueva sale con ese
+      // patrón y su propio fin; si no, hereda el de la vieja.
+      const requested =
+        recurrence !== undefined
+          ? deserializeRecurrence(serializeRecurrence(recurrence))
+          : null;
+      let pattern;
+      if (requested) {
+        assertRuleFitsStart(requested, newStartDate);
+        pattern = extractPattern(requested);
+      } else {
+        // Patrón simple (0-1 día): el día sale del nuevo inicio, así se puede
+        // mover. Patrón personalizado (varios días, "primer lunes"): se conserva
+        // y el nuevo inicio tiene que calzar.
+        const custom =
+          (oldPattern.byDay?.length ?? 0) > 1 ||
+          oldPattern.monthly?.type === "nthWeekday";
+        pattern = {
+          ...oldPattern,
+          byDay: (oldPattern.byDay?.length ?? 0) > 1 ? oldPattern.byDay : null,
+        };
+        if (custom) {
+          try {
+            assertRuleFitsStart(pattern, newStartDate);
+          } catch (err) {
+            if (!(err instanceof RecurrenceInputError)) throw err;
+            throw new RecurrenceInputError(
+              "This series repeats on a custom pattern and the new date doesn't fit it. " +
+                'Pick a date that matches the pattern, or change the pattern too. ' +
+                `(${err.message})`,
+            );
+          }
+        }
+      }
+      const tail = requested
+        ? {
+            count: requested.count,
+            until: requested.until,
+            endless: requested.endless,
+          }
+        : null;
 
       // ¿El corte cae en (o antes de) la primera ocurrencia? Entonces "esta y
       // las siguientes" == toda la serie: se reescribe el MAESTRO EN SU LUGAR
@@ -721,12 +764,14 @@ export async function updateCalendarEvent(req, res) {
       //    por las ocurrencias que quedan del lado viejo.
       let newRecurrence;
       if (isFirstOccurrence) {
-        newRecurrence = {
-          freq,
-          interval,
-          count: oldRecurrence.count ?? null,
-          until: oldRecurrence.until ?? null,
-        };
+        newRecurrence = tail
+          ? { ...pattern, ...tail }
+          : {
+              ...pattern,
+              count: oldRecurrence.count ?? null,
+              until: oldRecurrence.until ?? null,
+              endless: oldRecurrence.endless ?? false,
+            };
       } else {
         let remainingCount = null;
         let beforeCount = null;
@@ -742,22 +787,24 @@ export async function updateCalendarEvent(req, res) {
           ).length;
           remainingCount = Math.max(1, oldRecurrence.count - beforeCount);
         }
-        newRecurrence = {
-          freq,
-          interval,
-          count: remainingCount,
-          until: oldRecurrence.until ?? null,
-        };
+        newRecurrence = tail
+          ? { ...pattern, ...tail }
+          : {
+              ...pattern,
+              count: remainingCount,
+              until: oldRecurrence.until ?? null,
+              endless: oldRecurrence.endless ?? false,
+            };
 
         // Truncar la recurrencia del maestro VIEJO para que no siga
         // "prometiendo" ocurrencias que ahora viven en la serie nueva.
         const truncatedOld =
           beforeCount != null
-            ? { freq, interval, count: beforeCount, until: null }
+            ? { ...oldPattern, count: beforeCount, until: null, endless: false }
             : {
-                freq,
-                interval,
+                ...oldPattern,
                 count: null,
+                endless: false,
                 until: DateTime.fromISO(existing.scheduled_date, { zone: TZ })
                   .minus({ days: 1 })
                   .toISODate(),
@@ -1080,6 +1127,9 @@ export async function updateCalendarEvent(req, res) {
       ),
     });
   } catch (e) {
+    if (e instanceof RecurrenceInputError) {
+      return res.status(400).json({ ok: false, error: e.message });
+    }
     console.error("❌ updateCalendarEvent:", e.message);
     return res.status(500).json({ ok: false, error: e.message });
   }
@@ -1178,23 +1228,10 @@ export async function getSeriesRecurrence(req, res) {
         .json({ ok: false, error: "This event has no recurrence rule." });
     }
     const raw = deserializeRecurrence(master.recurrence_rule) ?? {};
-    // El Frontend (SeriesRecurrenceInfo) espera freq con "BIWEEKLY" explícito
-    // y un endType derivado — no el shape crudo {freq,interval,count,until}
-    // que se guarda en la columna.
-    const freq =
-      raw.freq === "WEEKLY" && Number(raw.interval) === 2
-        ? "BIWEEKLY"
-        : raw.freq;
-    const endType = raw.until ? "until" : raw.count ? "count" : "never";
-    return res.json({
-      ok: true,
-      recurrence: {
-        freq,
-        endType,
-        count: raw.count ?? null,
-        until: raw.until ?? null,
-      },
-    });
+    // El panel (SeriesRecurrenceInfo) espera freq con "BIWEEKLY" explícito, el
+    // preset del selector, y un endType derivado — no el shape crudo que se
+    // guarda en la columna.
+    return res.json({ ok: true, recurrence: describeRecurrence(raw) });
   } catch (e) {
     console.error("❌ getSeriesRecurrence:", e.message);
     return res.status(500).json({ ok: false, error: e.message });
