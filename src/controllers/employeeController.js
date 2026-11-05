@@ -1,5 +1,12 @@
 import { supabase } from "../supabaseClient.js";
 import { recordEntityChange, recordHistory } from "../services/recordHistory.js";
+import {
+  getStaffUsernameByEmployeeId,
+  isValidPassword,
+  isValidUsername,
+  upsertCredential,
+  usernameTaken,
+} from "../services/appCredentials.js";
 
 const PAGE_LIMIT = 25;
 
@@ -50,6 +57,25 @@ function pickWritable(body) {
   return fields;
 }
 
+// LAB484 — agrega `username` (su cuenta de la app) a una lista de empleadas.
+// Una sola consulta para todas: la lista del dashboard trae 25 por pagina.
+async function withUsernames(rows) {
+  if (!rows.length) return rows;
+  const { data, error } = await supabase
+    .from("app_credentials")
+    .select("username, employee_id")
+    .eq("role", "cleaner")
+    .in("employee_id", rows.map((r) => r.id));
+
+  if (error) {
+    // El acceso es informativo en la lista: si falla, se muestra la lista igual.
+    console.warn("⚠️ withUsernames:", error.message);
+    return rows.map((r) => ({ ...r, username: null }));
+  }
+  const byEmployee = new Map((data ?? []).map((c) => [c.employee_id, c.username]));
+  return rows.map((r) => ({ ...r, username: byEmployee.get(r.id) ?? null }));
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/admin/staff
 // Query: search, active (true|false|all), page, limit
@@ -82,10 +108,15 @@ export async function listEmployees(req, res) {
     const { data, error, count } = await query;
     if (error) throw error;
 
+    // LAB484 — el username de cada una, en UNA consulta para toda la pagina
+    // (no una por fila). Es lo que deja marcar en la lista a quien le falta el
+    // acceso a la app; null = todavia no tiene cuenta.
+    const employees = await withUsernames(data ?? []);
+
     const total = count ?? 0;
     return res.json({
       ok: true,
-      employees: data ?? [],
+      employees,
       pagination: {
         page,
         limit,
@@ -149,6 +180,8 @@ export async function getEmployee(req, res) {
         ...employee,
         availability: normalizedAvailability,
         time_off: timeOff ?? [],
+        // LAB484 — su usuario de la app, o null si todavia no tiene acceso.
+        username: await getStaffUsernameByEmployeeId(id),
       },
     });
   } catch (e) {
@@ -158,10 +191,33 @@ export async function getEmployee(req, res) {
   }
 }
 
+// LAB484 — validacion del acceso a la app (app_credentials) antes de tocar
+// nada. Se valida ANTES de insertar la empleada para no dejarla a medias si el
+// usuario ya estaba tomado. Devuelve un mensaje listo para mostrar, o null.
+//
+// El rol siempre es "cleaner": crear cuentas de admin desde el dashboard no
+// esta implementado a proposito (pedido explicito). Si alguna vez se agrega,
+// el rol tiene que venir de una lista blanca, nunca del body tal cual.
+async function validateNewLogin({ username, password }) {
+  if (!isValidUsername(username)) {
+    return "Username must be 3-30 characters: letters, numbers, dot, dash or underscore.";
+  }
+  if (!isValidPassword(password)) {
+    return "Password must be at least 6 characters.";
+  }
+  // Ojo: el alta pisa por username (upsert onConflict), asi que sin este
+  // chequeo un usuario repetido le cambiaria la contrasena a otra persona.
+  if (await usernameTaken(username)) {
+    return `The username "${username}" is already taken.`;
+  }
+  return null;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/admin/staff
-// Body: name*, hourly_work_rate*, hourly_travel_rate*, email, phone,
-//       hire_date, has_license, is_team_leader, e_transfer_email, notes
+// Body: name*, hourly_work_rate*, hourly_travel_rate*, email*, username*,
+//       password*, phone, hire_date, has_license, is_team_leader,
+//       e_transfer_email, notes
 // ─────────────────────────────────────────────────────────────────────────────
 export async function createEmployee(req, res) {
   try {
@@ -184,6 +240,17 @@ export async function createEmployee(req, res) {
         .json({ ok: false, error: "gender must be male, female, or other" });
     }
 
+    // LAB484 — el alta incluye el acceso a la app. Es obligatorio: una cleaner
+    // sin cuenta no puede ver sus visitas ni cargar el checklist, y hasta ahora
+    // la cuenta habia que crearla despues a mano con un script.
+    const username = String(req.body.username || "").trim();
+    const password = String(req.body.password || "");
+    if (!fields.email?.trim()) {
+      return res.status(400).json({ ok: false, error: "email is required" });
+    }
+    const loginError = await validateNewLogin({ username, password });
+    if (loginError) return res.status(400).json({ ok: false, error: loginError });
+
     // Default to active on creation
     if (fields.is_active === undefined) fields.is_active = true;
 
@@ -195,10 +262,87 @@ export async function createEmployee(req, res) {
 
     if (error) throw error;
 
-    console.log(`✅ Created employee: ${data.id} — ${data.name}`);
-    return res.status(201).json({ ok: true, employee: data });
+    try {
+      await upsertCredential({
+        username,
+        role: "cleaner",
+        plainPassword: password,
+        email: fields.email.trim(),
+        employeeId: data.id,
+      });
+    } catch (credErr) {
+      // Sin transacciones entre las dos tablas: si la credencial falla, se
+      // borra la empleada recién creada para no dejar un alta a medias (no
+      // tiene historial ni referencias todavía).
+      await supabase.from("employees").delete().eq("id", data.id);
+      console.error("❌ createEmployee (credential):", credErr.message);
+      return res.status(500).json({
+        ok: false,
+        error: "The cleaner could not be created: their login failed to save.",
+      });
+    }
+
+    console.log(`✅ Created employee: ${data.id} — ${data.name} (login: ${username})`);
+    return res.status(201).json({ ok: true, employee: { ...data, username } });
   } catch (e) {
     console.error("❌ createEmployee:", e.message);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/admin/staff/:id/credential
+// Body: username*, password*
+//
+// LAB484 — acceso a la app para una empleada que ya estaba cargada sin cuenta.
+// NO sirve para cambiar la contraseña de una cuenta existente: si ya tiene, se
+// rechaza (eso se hace desde "My account" en la app).
+// ─────────────────────────────────────────────────────────────────────────────
+export async function createEmployeeCredential(req, res) {
+  try {
+    const { id } = req.params;
+    const username = String(req.body.username || "").trim();
+    const password = String(req.body.password || "");
+
+    const { data: employee, error } = await supabase
+      .from("employees")
+      .select("id, name, email")
+      .eq("id", id)
+      .maybeSingle();
+    if (error) throw error;
+    if (!employee) {
+      return res.status(404).json({ ok: false, error: "Employee not found" });
+    }
+    if (!employee.email?.trim()) {
+      return res.status(400).json({
+        ok: false,
+        error: "This cleaner has no email yet. Add one before creating their login.",
+      });
+    }
+
+    const existing = await getStaffUsernameByEmployeeId(id);
+    if (existing) {
+      return res.status(409).json({
+        ok: false,
+        error: `${employee.name} already signs in as "${existing}".`,
+      });
+    }
+
+    const loginError = await validateNewLogin({ username, password });
+    if (loginError) return res.status(400).json({ ok: false, error: loginError });
+
+    await upsertCredential({
+      username,
+      role: "cleaner",
+      plainPassword: password,
+      email: employee.email.trim(),
+      employeeId: id,
+    });
+
+    console.log(`✅ Created login "${username}" for employee ${id} — ${employee.name}`);
+    return res.status(201).json({ ok: true, username });
+  } catch (e) {
+    console.error("❌ createEmployeeCredential:", e.message);
     return res.status(500).json({ ok: false, error: e.message });
   }
 }

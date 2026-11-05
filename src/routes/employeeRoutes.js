@@ -4,6 +4,7 @@ import {
   listEmployees,
   getEmployee,
   createEmployee,
+  createEmployeeCredential,
   updateEmployee,
   deactivateEmployee,
   searchEmployees,
@@ -59,6 +60,8 @@ router.get("/", listEmployees);
 router.post("/", createEmployee);
 router.get("/:id", getEmployee);
 router.patch("/:id", updateEmployee);
+// LAB484 — acceso a la app para una empleada ya cargada sin cuenta.
+router.post("/:id/credential", createEmployeeCredential);
 router.delete("/:id", deactivateEmployee);
 
 export default router;

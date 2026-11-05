@@ -18,7 +18,7 @@
 import { DateTime } from "luxon";
 import { supabase } from "./supabaseService.js";
 
-const TZ = process.env.BOOKING_TIMEZONE ?? "America/Vancouver";
+import { TZ } from "../config/timezone.js";
 
 /**
  * Rango de la semana ISO (lunes 00:00 → domingo) que contiene `ref`.

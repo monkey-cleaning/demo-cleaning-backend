@@ -28,7 +28,7 @@ import { DateTime } from "luxon";
 import { supabase } from "./supabaseService.js";
 import { getWorkWindow, getOperationalSettings } from "./settingsService.js";
 
-const TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
+import { TZ } from "../config/timezone.js";
 
 // La tabla exige >= 90 min por fila (min_duration). Si alguien baja la env por
 // error, clampeamos en vez de generar miles de filas que Postgres va a rechazar.

@@ -27,7 +27,11 @@ import {
   serializeRecurrence,
   deserializeRecurrence,
   expandRecurrenceDates,
-  extractFreqInterval,
+  buildInstanceRows,
+  extractPattern,
+  describeRecurrence,
+  assertRuleFitsStart,
+  RecurrenceInputError,
 } from "../services/recurrenceService.js";
 import {
   sendUrgentAssignmentEmail,
@@ -48,7 +52,7 @@ import {
   isLunchEventSummary,
 } from "../services/eventClassification.js";
 
-const TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
+import { TZ, TZ_LABEL } from "../config/timezone.js";
 
 // ── Teams config — igual que antes, sin cambios (ya leía de DB) ─────────────
 let TEAMS_CONFIG = {};
@@ -475,30 +479,7 @@ async function materializeSeries(masterRow, recurrence, baseFields) {
   const rest = dates.slice(1);
   if (!rest.length) return [masterRow];
 
-  const durationMs =
-    DateTime.fromISO(masterRow.ends_at).toMillis() -
-    DateTime.fromISO(masterRow.starts_at).toMillis();
-
-  const rows = rest.map((date) => {
-    const startsAt = DateTime.fromJSDate(date).toUTC().toISO();
-    const endsAt = DateTime.fromJSDate(date)
-      .toUTC()
-      .plus({ milliseconds: durationMs })
-      .toISO();
-    const startDt = DateTime.fromISO(startsAt, { zone: TZ });
-    const endDt = DateTime.fromISO(endsAt, { zone: TZ });
-    return {
-      ...baseFields,
-      starts_at: startsAt,
-      ends_at: endsAt,
-      scheduled_date: startDt.toISODate(),
-      scheduled_start_time: startDt.toFormat("HH:mm:ss"),
-      scheduled_end_time: endDt.toFormat("HH:mm:ss"),
-      is_series_master: false,
-      series_id: masterRow.id,
-      status: "pending",
-    };
-  });
+  const rows = buildInstanceRows(masterRow, rest, baseFields);
 
   const { data: inserted, error } = await supabase
     .from("appointments")
@@ -549,7 +530,7 @@ export async function createCalendarEvent(req, res) {
       scheduled_end_time: endDt.toFormat("HH:mm:ss"),
       starts_at: startDt.toISO(),
       ends_at: endDt.toISO(),
-      timezone: TZ,
+      timezone: TZ_LABEL,
       special_instructions: description || null,
       property_address: location || "",
       gcal_summary: withTeamTag(summary, teamIdFromColor),
@@ -562,6 +543,7 @@ export async function createCalendarEvent(req, res) {
     let recurrenceRuleJson = null;
     let normalizedRecurrence = null;
     if (recurrence) {
+      assertRuleFitsStart(recurrence, startDt.toISODate());
       recurrenceRuleJson = serializeRecurrence(recurrence);
       normalizedRecurrence = deserializeRecurrence(recurrenceRuleJson);
     }
@@ -602,6 +584,9 @@ export async function createCalendarEvent(req, res) {
 
     return res.status(201).json({ ok: true, event: mapRow(masterRow) });
   } catch (e) {
+    if (e instanceof RecurrenceInputError) {
+      return res.status(400).json({ ok: false, error: e.message });
+    }
     console.error("❌ createCalendarEvent:", e.message);
     return res.status(500).json({ ok: false, error: e.message });
   }
@@ -652,21 +637,14 @@ export async function updateCalendarEvent(req, res) {
     }
 
     const isPartOfSeries = !!existing.series_id;
-    if (recurrence !== undefined) {
-      if (scope === "following") {
-        return res.status(400).json({
-          ok: false,
-          error:
-            'Changing recurrence isn\'t supported with "This and following events". Choose "All recurring events" instead.',
-        });
-      }
-      if (isPartOfSeries && scope !== "all") {
-        return res.status(400).json({
-          ok: false,
-          error:
-            'To change how often this event repeats, choose "All recurring events".',
-        });
-      }
+    if (recurrence !== undefined && isPartOfSeries && scope !== "following") {
+      // Cambiar el patrón de una serie parte la serie en esta ocurrencia: lo
+      // anterior queda como estaba y lo que sigue se regenera con el patrón nuevo.
+      return res.status(400).json({
+        ok: false,
+        error:
+          'To change how often this event repeats, choose "This and following events".',
+      });
     }
 
     const resolvedColorId =
@@ -706,7 +684,50 @@ export async function updateCalendarEvent(req, res) {
       const masterId = existing.series_id;
       const masterRow = followingMaster;
       const oldRecurrence = followingRecurrence;
-      const { freq, interval } = extractFreqInterval(oldRecurrence);
+      const oldPattern = extractPattern(oldRecurrence);
+      const newStartDate = DateTime.fromISO(startIso, { zone: TZ }).toISODate();
+
+      // ¿Viene un patrón nuevo (LAB617)? Entonces la serie nueva sale con ese
+      // patrón y su propio fin; si no, hereda el de la vieja.
+      const requested =
+        recurrence !== undefined
+          ? deserializeRecurrence(serializeRecurrence(recurrence))
+          : null;
+      let pattern;
+      if (requested) {
+        assertRuleFitsStart(requested, newStartDate);
+        pattern = extractPattern(requested);
+      } else {
+        // Patrón simple (0-1 día): el día sale del nuevo inicio, así se puede
+        // mover. Patrón personalizado (varios días, "primer lunes"): se conserva
+        // y el nuevo inicio tiene que calzar.
+        const custom =
+          (oldPattern.byDay?.length ?? 0) > 1 ||
+          oldPattern.monthly?.type === "nthWeekday";
+        pattern = {
+          ...oldPattern,
+          byDay: (oldPattern.byDay?.length ?? 0) > 1 ? oldPattern.byDay : null,
+        };
+        if (custom) {
+          try {
+            assertRuleFitsStart(pattern, newStartDate);
+          } catch (err) {
+            if (!(err instanceof RecurrenceInputError)) throw err;
+            throw new RecurrenceInputError(
+              "This series repeats on a custom pattern and the new date doesn't fit it. " +
+                'Pick a date that matches the pattern, or change the pattern too. ' +
+                `(${err.message})`,
+            );
+          }
+        }
+      }
+      const tail = requested
+        ? {
+            count: requested.count,
+            until: requested.until,
+            endless: requested.endless,
+          }
+        : null;
 
       // ¿El corte cae en (o antes de) la primera ocurrencia? Entonces "esta y
       // las siguientes" == toda la serie: se reescribe el MAESTRO EN SU LUGAR
@@ -721,12 +742,14 @@ export async function updateCalendarEvent(req, res) {
       //    por las ocurrencias que quedan del lado viejo.
       let newRecurrence;
       if (isFirstOccurrence) {
-        newRecurrence = {
-          freq,
-          interval,
-          count: oldRecurrence.count ?? null,
-          until: oldRecurrence.until ?? null,
-        };
+        newRecurrence = tail
+          ? { ...pattern, ...tail }
+          : {
+              ...pattern,
+              count: oldRecurrence.count ?? null,
+              until: oldRecurrence.until ?? null,
+              endless: oldRecurrence.endless ?? false,
+            };
       } else {
         let remainingCount = null;
         let beforeCount = null;
@@ -742,22 +765,24 @@ export async function updateCalendarEvent(req, res) {
           ).length;
           remainingCount = Math.max(1, oldRecurrence.count - beforeCount);
         }
-        newRecurrence = {
-          freq,
-          interval,
-          count: remainingCount,
-          until: oldRecurrence.until ?? null,
-        };
+        newRecurrence = tail
+          ? { ...pattern, ...tail }
+          : {
+              ...pattern,
+              count: remainingCount,
+              until: oldRecurrence.until ?? null,
+              endless: oldRecurrence.endless ?? false,
+            };
 
         // Truncar la recurrencia del maestro VIEJO para que no siga
         // "prometiendo" ocurrencias que ahora viven en la serie nueva.
         const truncatedOld =
           beforeCount != null
-            ? { freq, interval, count: beforeCount, until: null }
+            ? { ...oldPattern, count: beforeCount, until: null, endless: false }
             : {
-                freq,
-                interval,
+                ...oldPattern,
                 count: null,
+                endless: false,
                 until: DateTime.fromISO(existing.scheduled_date, { zone: TZ })
                   .minus({ days: 1 })
                   .toISODate(),
@@ -783,7 +808,7 @@ export async function updateCalendarEvent(req, res) {
 
       const baseFields = {
         client_id: clientId ?? existing.client_id,
-        timezone: TZ,
+        timezone: TZ_LABEL,
         special_instructions: description ?? existing.special_instructions,
         property_address: location ?? existing.property_address,
         gcal_summary: withTeamTag(
@@ -1080,6 +1105,9 @@ export async function updateCalendarEvent(req, res) {
       ),
     });
   } catch (e) {
+    if (e instanceof RecurrenceInputError) {
+      return res.status(400).json({ ok: false, error: e.message });
+    }
     console.error("❌ updateCalendarEvent:", e.message);
     return res.status(500).json({ ok: false, error: e.message });
   }
@@ -1178,23 +1206,10 @@ export async function getSeriesRecurrence(req, res) {
         .json({ ok: false, error: "This event has no recurrence rule." });
     }
     const raw = deserializeRecurrence(master.recurrence_rule) ?? {};
-    // El Frontend (SeriesRecurrenceInfo) espera freq con "BIWEEKLY" explícito
-    // y un endType derivado — no el shape crudo {freq,interval,count,until}
-    // que se guarda en la columna.
-    const freq =
-      raw.freq === "WEEKLY" && Number(raw.interval) === 2
-        ? "BIWEEKLY"
-        : raw.freq;
-    const endType = raw.until ? "until" : raw.count ? "count" : "never";
-    return res.json({
-      ok: true,
-      recurrence: {
-        freq,
-        endType,
-        count: raw.count ?? null,
-        until: raw.until ?? null,
-      },
-    });
+    // El panel (SeriesRecurrenceInfo) espera freq con "BIWEEKLY" explícito, el
+    // preset del selector, y un endType derivado — no el shape crudo que se
+    // guarda en la columna.
+    return res.json({ ok: true, recurrence: describeRecurrence(raw) });
   } catch (e) {
     console.error("❌ getSeriesRecurrence:", e.message);
     return res.status(500).json({ ok: false, error: e.message });
@@ -1725,13 +1740,22 @@ export async function getAvailableStaff(req, res) {
       .neq("id", id)
       .neq("status", "cancelled");
 
-    let simultaneousTeamCount = 0;
+    // Pico de equipos simultáneos dentro de la ventana del evento, no la
+    // cantidad de citas solapadas: un evento largo solapa varios trabajos
+    // consecutivos del mismo equipo que nunca corren a la vez.
+    const overlapping = [];
     for (const ca of concurrentAppts ?? []) {
       if (!ca.starts_at || !ca.ends_at) continue;
       if (!ca.appointment_teams?.length) continue;
       const cStart = DateTime.fromISO(ca.starts_at, { zone: TZ });
       const cEnd = DateTime.fromISO(ca.ends_at, { zone: TZ });
-      if (eventStart < cEnd && eventEnd > cStart) simultaneousTeamCount++;
+      if (eventStart < cEnd && eventEnd > cStart)
+        overlapping.push({ s: cStart.toMillis(), e: cEnd.toMillis() });
+    }
+    let simultaneousTeamCount = 0;
+    for (const a of overlapping) {
+      const active = overlapping.filter((b) => b.s <= a.s && b.e > a.s).length;
+      if (active > simultaneousTeamCount) simultaneousTeamCount = active;
     }
     const atCapacity = simultaneousTeamCount >= maxSimultaneousTeams;
 

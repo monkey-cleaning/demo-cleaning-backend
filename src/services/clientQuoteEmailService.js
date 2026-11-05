@@ -1,7 +1,8 @@
 import nodemailer from "nodemailer";
 import { DateTime } from "luxon";
 
-const BOOKING_TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
+import { TZ } from "../config/timezone.js";
+const BOOKING_TZ = TZ;
 
 // Dominio publico del frontend. Se usa para armar el link de reserva que va
 // en el email de cotizacion; sin esto el link apuntaba al sitio de Monkey.

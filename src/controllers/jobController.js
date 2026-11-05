@@ -2,10 +2,15 @@ import {
     fetchAndLockDueCustomerEmails,
     markCustomerEmailSent,
     markCustomerEmailFailed,
+    rescheduleCustomerEmail,
     releaseStaleLocks,
   } from '../services/supabaseService.js';
   
   import { sendClientEmail } from '../services/clientQuoteEmailService.js';
+  import { sendCustomerEmailDeliveryFailureAlert } from '../services/opsNotificationService.js';
+
+  const MAX_SEND_ATTEMPTS = 3;
+  const RETRY_DELAY_MINUTES = 5;
   
   const JOB_TOKEN = process.env.JOBS_TOKEN;
   
@@ -29,7 +34,9 @@ import {
   
       let sent = 0;
       let failed = 0;
+      let retried = 0;
       let skipped = 0;
+      const finalFailures = [];
   
       for (const row of rows) {
         try {
@@ -53,18 +60,34 @@ import {
           const msg = err?.message || String(err);
           console.error(`❌ Failed customer email id=${row.id}:`, msg);
   
-          // 🔁 Si falló, lo marcamos failed (MVP).
-          // (Si luego querés reintentos, cambiamos a pending si attempts < N)
-          await markCustomerEmailFailed(row.id, msg);
-          failed++;
+          // attempts ya se incrementó al lockear: reprogramar mientras queden
+          // intentos; al agotarlos, failed + alerta.
+          if (Number(row.attempts || 0) < MAX_SEND_ATTEMPTS) {
+            await rescheduleCustomerEmail(row.id, msg, RETRY_DELAY_MINUTES);
+            retried++;
+          } else {
+            await markCustomerEmailFailed(row.id, msg);
+            failed++;
+            finalFailures.push({
+              id: row.id,
+              leadId: row.lead_id,
+              to: row.payload?.to,
+              type: row.payload?.type,
+              attempts: row.attempts,
+              error: msg,
+            });
+          }
         }
       }
   
+      await sendCustomerEmailDeliveryFailureAlert({ failures: finalFailures });
+
       return res.json({
         ok: true,
         locked: rows.length,
         sent,
         failed,
+        retried,
         skipped,
         now: new Date().toISOString(),
       });

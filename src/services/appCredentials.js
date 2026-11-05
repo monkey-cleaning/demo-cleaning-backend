@@ -90,6 +90,28 @@ export async function verifyPassword(username, plainPassword, expectedRole) {
  * cleaner todavía no tiene cuenta. Lo usa el pie del digest para mostrarle
  * a cada cleaner con qué usuario entra.
  */
+/**
+ * employee_id (app_credentials, solo cleaners) -> employees.email, para el
+ * claim `email` del JWT de staff: es lo que staffCalendarController /
+ * staffHoursController usan para filtrar "mis eventos". Compartida por
+ * staffAuthRoutes.js y adminAuthRoutes.js: esta ultima la necesita porque un
+ * cleaner que entra por /admin/login (cross-login) igual necesita un JWT de
+ * cleaner valido.
+ */
+export async function gcalEmailForEmployee(employeeId) {
+  if (!employeeId) return null;
+  const { data, error } = await supabase
+    .from("employees")
+    .select("email")
+    .eq("id", employeeId)
+    .maybeSingle();
+  if (error) {
+    console.error("❌ gcalEmailForEmployee:", error.message);
+    return null;
+  }
+  return data?.email ?? null;
+}
+
 export async function getStaffUsernameByEmployeeId(employeeId) {
   if (!employeeId) return null;
   const { data, error } = await supabase

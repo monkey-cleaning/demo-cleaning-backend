@@ -37,7 +37,7 @@ import {
   getTeamDefaultSize,
 } from "./supabaseService.js";
 
-const TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
+import { TZ } from "../config/timezone.js";
 const LOOKBACK_WEEKS = 4;
 
 // ── withTeamTag — copia de calendarController.js (mantener sincronizado) ─────

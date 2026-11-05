@@ -30,7 +30,7 @@ import {
   sendSurveyFeedbackNudgeEmail,
 } from "../services/clientNotificationService.js";
 
-const TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
+import { TZ } from "../config/timezone.js";
 const LOG = "[surveyNudgeJob]";
 
 const ONLY_CLIENT_IDS = (process.env.SURVEY_ONLY_CLIENT_IDS || "")

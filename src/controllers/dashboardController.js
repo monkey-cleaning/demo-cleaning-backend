@@ -8,7 +8,7 @@ import {
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const TZ = process.env.BOOKING_TIMEZONE ?? "America/Vancouver";
+import { TZ } from "../config/timezone.js";
 const RISK_DAYS = 21;
 const INACTIVE_DAYS = 30;
 

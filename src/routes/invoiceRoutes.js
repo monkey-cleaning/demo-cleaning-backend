@@ -127,6 +127,7 @@ router.get("/:id", async (req, res) => {
  *
  * Body (todos opcionales):
  * {
+ *   client_id:  string (UUID),
  *   line_items: [{ description, amount }],
  *   due_date:   string,
  *   notes:      string
@@ -134,8 +135,11 @@ router.get("/:id", async (req, res) => {
  */
 router.patch("/:id", async (req, res) => {
   try {
-    const { line_items, due_date, notes } = req.body;
+    const { client_id, line_items, due_date, notes } = req.body;
 
+    if (client_id !== undefined && !client_id) {
+      return res.status(400).json({ error: "client_id no puede estar vacío" });
+    }
     if (line_items !== undefined) {
       if (!Array.isArray(line_items) || line_items.length === 0) {
         return res
@@ -156,6 +160,7 @@ router.patch("/:id", async (req, res) => {
     }
 
     const updated = await updateDraftInvoice(req.params.id, {
+      client_id,
       line_items,
       due_date,
       notes,

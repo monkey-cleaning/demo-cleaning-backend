@@ -14,7 +14,7 @@ import { DateTime } from "luxon";
 import { supabase } from "../supabaseClient.js";
 import { GLOBAL_ENTITY_ID } from "../services/recordHistory.js";
 
-const TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
+import { TZ } from "../config/timezone.js";
 
 function parseIntSafe(v, fallback) {
   const n = parseInt(v, 10);

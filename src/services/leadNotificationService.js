@@ -205,7 +205,7 @@ export async function sendLeadNotificationEmail(leadData, options = {}) {
         </div>
 
         <div class="metadata">
-          <p><strong>📅 Date:</strong> ${new Date().toLocaleString("en-CA", { dateStyle: "full", timeStyle: "short", timeZone: "America/Vancouver" })}</p>
+          <p><strong>📅 Date:</strong> ${new Date().toLocaleString("en-CA", { dateStyle: "full", timeStyle: "short", timeZone: TZ })}</p>
           ${source ? `<p><strong>📍 Source:</strong> ${source}</p>` : ""}
         </div>
 
@@ -507,7 +507,7 @@ function generateCompleteLeadRows(leadData) {
         formattedValue = date.toLocaleString("en-CA", {
           dateStyle: "medium",
           timeStyle: "short",
-          timeZone: "America/Vancouver",
+          timeZone: TZ,
         });
       } catch {
         formattedValue = value;
@@ -550,7 +550,8 @@ function generateCompleteLeadRows(leadData) {
 const BOOKING_NOTIFICATION_EMAIL =
   process.env.BOOKING_NOTIFICATION_EMAIL || "contact@monkeycleaning.com";
 
-const BOOKING_TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
+import { TZ } from "../config/timezone.js";
+const BOOKING_TZ = TZ;
 
 /**
  * Envía notificación interna cuando se confirma un booking desde la web.

@@ -5,6 +5,7 @@ import {
   getRequestConfig,
 } from "./quickbooksService.js";
 import { recordHistory } from "./recordHistory.js";
+import { computeEventClientMoney } from "./clientBillingCalculator.js";
 
 // ─── CREATE DRAFT ────────────────────────────────────────────────────────────
 
@@ -39,6 +40,68 @@ export async function createDraftInvoice({
   console.log(
     `[Invoice] ✅ Draft creado. id: ${invoice.id} | client: ${client_id} | total: ${total_amount}`,
   );
+  return invoice;
+}
+
+// ─── AUTO-CREATE DRAFT FOR A DONE SERVICE ───────────────────────────────────
+//
+// Lo llama jobs/invoiceDraftJob.js para un appointment ya realizado. El monto
+// usa la misma fórmula que "cuánto se le cobró al cliente" en payroll
+// (clientBillingCalculator.js): horas × equipo × tarifa × (1 + GST). Siempre
+// queda como draft editable, nunca se publica solo.
+//
+// Idempotente vía appointments.invoice_id: si ya tiene uno, no crea otro.
+export async function createDraftInvoiceForCompletedAppointment({
+  appointmentId,
+  clientId,
+  serviceType,
+  scheduledDate,
+  startsAt,
+  endsAt,
+  attendeeCount,
+  clientRate,
+}) {
+  if (!appointmentId || !clientId) return null;
+
+  const { data: appt, error: apptErr } = await supabase
+    .from("appointments")
+    .select("invoice_id")
+    .eq("id", appointmentId)
+    .maybeSingle();
+  if (apptErr) {
+    console.error(`[Invoice] ⚠️ Error leyendo appointment ${appointmentId} para auto-invoice:`, apptErr.message);
+    return null;
+  }
+  if (!appt || appt.invoice_id) return null;
+
+  const description = ["Cleaning service", serviceType || null, scheduledDate || null]
+    .filter(Boolean)
+    .join(" — ");
+
+  let amount = 0;
+  let notes = "Auto-created from completed appointment — amount pending review";
+  if (startsAt && endsAt) {
+    const durationH = (new Date(endsAt) - new Date(startsAt)) / 3600000;
+    const { calculatedAmount } = computeEventClientMoney({ durationH, attendeeCount, serviceType, clientRate });
+    amount = calculatedAmount;
+    notes = "Auto-calculated from completed appointment — please verify before publishing";
+  }
+
+  const invoice = await createDraftInvoice({
+    client_id: clientId,
+    line_items: [{ description, amount }],
+    notes,
+  });
+
+  const { error: linkErr } = await supabase
+    .from("appointments")
+    .update({ invoice_id: invoice.id })
+    .eq("id", appointmentId);
+  if (linkErr) {
+    console.error(`[Invoice] ⚠️ No se pudo linkear invoice ${invoice.id} al appointment ${appointmentId}:`, linkErr.message);
+  }
+
+  console.log(`[Invoice] 🧾 Draft auto-creado. appointment: ${appointmentId} | invoice: ${invoice.id}`);
   return invoice;
 }
 
@@ -124,7 +187,7 @@ export async function getDraftInvoiceById(id) {
 
 // ─── UPDATE DRAFT ────────────────────────────────────────────────────────────
 
-export async function updateDraftInvoice(id, { line_items, due_date, notes }) {
+export async function updateDraftInvoice(id, { client_id, line_items, due_date, notes }) {
   // Solo se pueden editar drafts
   const existing = await getDraftInvoiceById(id);
   if (!existing) throw new Error("Invoice no encontrada");
@@ -136,6 +199,7 @@ export async function updateDraftInvoice(id, { line_items, due_date, notes }) {
 
   const updates = { updated_at: new Date().toISOString() };
 
+  if (client_id !== undefined) updates.client_id = client_id;
   if (line_items !== undefined) {
     updates.line_items = line_items;
     updates.total_amount = line_items.reduce(
@@ -150,7 +214,7 @@ export async function updateDraftInvoice(id, { line_items, due_date, notes }) {
     .from("invoices")
     .update(updates)
     .eq("id", id)
-    .select("*, leads(full_name, email)")
+    .select("*, clients(first_name, last_name, email)")
     .single();
 
   if (error) throw new Error(`Error actualizando invoice: ${error.message}`);

@@ -22,7 +22,7 @@ import { supabase } from "../supabaseClient.js";
 import { buildFollowUpEmail } from "../services/clientQuoteEmailService.js";
 import { DateTime } from "luxon";
 
-const TZ  = process.env.BOOKING_TIMEZONE || "America/Vancouver";
+import { TZ } from "../config/timezone.js";
 const LOG = "[followUpQuoteJob]";
 
 // Statuses que indican que el lead sigue "abierto"

@@ -72,20 +72,24 @@ function logoBlockHtml() {
           </table>
         </td>
         <td style="padding-left:10px;vertical-align:middle;">
-          <span style="color:#fff;font-size:18px;font-weight:700;letter-spacing:-0.3px;">Monkey Cleaning</span>
+          <span style="color:#fff;font-size:18px;font-weight:700;letter-spacing:-0.3px;">${escapeHtml(SURVEY_BRAND)}</span>
         </td>
       </tr>
     </table>
   `;
 }
 
-function emailWrapper(bodyHtml) {
+function emailWrapper(bodyHtml, { preheader = "", footerHtml = "" } = {}) {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 </head>
-<body style="margin:0;padding:0;background:#f4f6f9;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">
+<body style="margin:0;padding:0;background:#f4f6f9;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">${
+    preheader
+      ? `<div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">${escapeHtml(preheader)}</div>`
+      : ""
+  }
   <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6f9;padding:32px 16px;">
     <tr><td align="center">
       <table width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%;">
@@ -101,7 +105,7 @@ function emailWrapper(bodyHtml) {
         </tr>
         <tr>
           <td style="background:#f8fafc;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;padding:16px 28px;">
-            <p style="margin:0;font-size:12px;color:#94a3b8;">Sent automatically by the Monkey Cleaning scheduling system.</p>
+            ${footerHtml || `<p style="margin:0;font-size:12px;color:#94a3b8;">Sent automatically by the ${SURVEY_BRAND} scheduling system.</p>`}
           </td>
         </tr>
       </table>
@@ -234,7 +238,7 @@ export async function sendConfirmationRequestEmail(client, slots) {
   return await sendWithRetry(
     transporter,
     {
-      from: `"Monkey Cleaning" <${process.env.GMAIL_USER}>`,
+      from: `"${SURVEY_BRAND}" <${process.env.GMAIL_USER}>`,
       to: client.email,
       subject: isChoice
         ? "Please confirm your cleaning time"
@@ -274,6 +278,19 @@ function surveyEmailsEnabled(label) {
     `[ClientNotif] ${label} SKIPPED — SURVEY_EMAILS_ENABLED is not "true". No survey email sent.`,
   );
   return false;
+}
+
+function firstName(name) {
+  return (name || "").trim().split(/\s+/)[0] || "there";
+}
+
+// Footer shared by the three survey emails (replaces the generic "sent automatically" one).
+const SURVEY_FOOTER_HTML = `
+  <p style="margin:0 0 4px;font-size:12px;color:#94a3b8;">You're receiving this email because you recently booked a service with ${SURVEY_BRAND}.</p>
+  <p style="margin:0;font-size:12px;color:#94a3b8;">Sent with care by our team.</p>`;
+
+function surveyEmailHtml(bodyHtml, preheader = "") {
+  return emailWrapper(bodyHtml, { preheader, footerHtml: SURVEY_FOOTER_HTML });
 }
 
 function surveyRecipient(clientEmail) {
@@ -317,7 +334,7 @@ function ratingButtonsHtml(token) {
     <table cellpadding="0" cellspacing="0" role="presentation" style="margin:8px 0 4px;">
       <tr>${cells}</tr>
     </table>
-    <p style="margin:4px 0 0;font-size:12px;color:#94a3b8;">1 = not happy · 5 = loved it</p>`;
+    <p style="margin:4px 0 0;font-size:12px;color:#94a3b8;">1 = Could have been better · 5 = Loved it!</p>`;
 }
 
 /**
@@ -338,12 +355,12 @@ export async function sendSurveyRequestEmail(client, token) {
 
   const bodyHtml = `
     <p style="margin:0 0 4px;font-size:11px;font-weight:700;color:#0b8043;letter-spacing:1px;text-transform:uppercase;">Your feedback</p>
-    <h1 style="margin:0 0 4px;font-size:22px;color:#0d1b3e;">How did we do, ${escapeHtml(client.name || "there")}? ✨</h1>
-    <p style="margin:0 0 12px;font-size:14px;color:#64748b;">
-      Thanks for choosing ${escapeHtml(SURVEY_BRAND)}. On a scale of 1 to 5, how would you rate your recent cleaning? Just tap a number:
-    </p>
+    <h1 style="margin:0 0 14px;font-size:22px;color:#0d1b3e;">Hi ${escapeHtml(firstName(client.name))},</h1>
+    <p style="margin:0 0 14px;font-size:14px;line-height:1.6;color:#334155;">We hope you're enjoying your fresh, clean home!</p>
+    <p style="margin:0 0 14px;font-size:14px;line-height:1.6;color:#334155;">Our team works hard to make your space feel great, and we'd love to know how we did. Could you give us a quick rating? It only takes a single tap:</p>
     ${ratingButtonsHtml(token)}
-    <p style="margin:18px 0 0;font-size:12px;color:#94a3b8;">It takes one tap and helps us keep improving.</p>
+    <p style="margin:14px 0 0;font-size:14px;line-height:1.6;color:#334155;">Your feedback helps us take better care of you and your home.</p>
+    <p style="margin:18px 0 0;font-size:14px;line-height:1.6;color:#334155;">Warmly,<br>The ${escapeHtml(SURVEY_BRAND)} Team</p>
   `;
 
   return await sendWithRetry(
@@ -351,8 +368,8 @@ export async function sendSurveyRequestEmail(client, token) {
     {
       from: `"${SURVEY_BRAND}" <${process.env.GMAIL_USER}>`,
       to: surveyRecipient(client.email),
-      subject: "How did we do? ✨",
-      html: emailWrapper(bodyHtml),
+      subject: `How was your cleaning, ${firstName(client.name)}?`,
+      html: surveyEmailHtml(bodyHtml, "We'd love to know how your cleaning went!"),
       attachments: logoAttachments(),
     },
     "SurveyRequest",
@@ -375,10 +392,9 @@ export async function sendSurveyReviewNudgeEmail(client, token) {
 
   const bodyHtml = `
     <p style="margin:0 0 4px;font-size:11px;font-weight:700;color:#0b8043;letter-spacing:1px;text-transform:uppercase;">A small favour</p>
-    <h1 style="margin:0 0 4px;font-size:22px;color:#0d1b3e;">You rated us 5 stars, ${escapeHtml(client.name || "there")} 🎉</h1>
-    <p style="margin:0 0 16px;font-size:14px;color:#64748b;">
-      Thank you! If you have a moment, a quick Google review means the world to a small local team like ours — it only takes a minute:
-    </p>
+    <h1 style="margin:0 0 14px;font-size:22px;color:#0d1b3e;">Hi ${escapeHtml(firstName(client.name))},</h1>
+    <p style="margin:0 0 14px;font-size:14px;line-height:1.6;color:#334155;"><strong style="color:#0d1b3e;">Thank you so much for the 5 stars!</strong> We're really happy you enjoyed your service.</p>
+    <p style="margin:0 0 14px;font-size:14px;line-height:1.6;color:#334155;">If you have a spare minute, a quick Google review would mean the world to our dedicated local team, and it helps your neighbors find us too:</p>
     <table cellpadding="0" cellspacing="0" role="presentation">
       <tr><td style="background:#0b8043;border-radius:8px;">
         <a href="${backendSurveyLink(token, "/go-review")}"
@@ -387,7 +403,8 @@ export async function sendSurveyReviewNudgeEmail(client, token) {
         </a>
       </td></tr>
     </table>
-    <p style="margin:18px 0 0;font-size:12px;color:#94a3b8;">Thank you for supporting ${escapeHtml(SURVEY_BRAND)} 💚</p>
+    <p style="margin:18px 0 0;font-size:14px;line-height:1.6;color:#334155;"><strong style="color:#0d1b3e;">Thanks again for trusting us with your home!</strong></p>
+    <p style="margin:18px 0 0;font-size:14px;line-height:1.6;color:#334155;">Best regards,<br>The ${escapeHtml(SURVEY_BRAND)} Team</p>
   `;
 
   return await sendWithRetry(
@@ -395,8 +412,8 @@ export async function sendSurveyReviewNudgeEmail(client, token) {
     {
       from: `"${SURVEY_BRAND}" <${process.env.GMAIL_USER}>`,
       to: surveyRecipient(client.email),
-      subject: "Would you share your 5 stars on Google? ✨",
-      html: emailWrapper(bodyHtml),
+      subject: `Thanks for the 5 stars, ${firstName(client.name)}!`,
+      html: surveyEmailHtml(bodyHtml),
       attachments: logoAttachments(),
     },
     "SurveyReviewNudge",
@@ -419,19 +436,19 @@ export async function sendSurveyFeedbackNudgeEmail(client, token, rating) {
 
   const bodyHtml = `
     <p style="margin:0 0 4px;font-size:11px;font-weight:700;color:#0b8043;letter-spacing:1px;text-transform:uppercase;">We'd love to know more</p>
-    <h1 style="margin:0 0 4px;font-size:22px;color:#0d1b3e;">Help us do better, ${escapeHtml(client.name || "there")}</h1>
-    <p style="margin:0 0 16px;font-size:14px;color:#64748b;">
-      You rated your recent cleaning below a 5, and we'd really like to understand what we could have done better. It only takes a moment:
-    </p>
+    <h1 style="margin:0 0 14px;font-size:22px;color:#0d1b3e;">Hi ${escapeHtml(firstName(client.name))},</h1>
+    <p style="margin:0 0 14px;font-size:14px;line-height:1.6;color:#334155;">Thank you for rating your recent service. We're sorry we didn't hit the mark, and we'd genuinely like to make it right.</p>
+    <p style="margin:0 0 14px;font-size:14px;line-height:1.6;color:#334155;">Could you tell us a bit about what we could have done better? It only takes a minute:</p>
     <table cellpadding="0" cellspacing="0" role="presentation">
       <tr><td style="background:#0d1b3e;border-radius:8px;">
         <a href="${frontendSurveyLink(token, `/${rating}`)}"
            style="display:inline-block;padding:12px 22px;color:#ffffff;font-size:14px;font-weight:700;text-decoration:none;">
-          Tell us what to improve
+          Share your feedback
         </a>
       </td></tr>
     </table>
-    <p style="margin:18px 0 0;font-size:12px;color:#94a3b8;">You can also just reply to this email — a real person reads it.</p>
+    <p style="margin:18px 0 0;font-size:14px;line-height:1.6;color:#334155;">Prefer to write to us more directly? Just reply to this email.</p>
+    <p style="margin:18px 0 0;font-size:14px;line-height:1.6;color:#334155;">Best regards,<br>The ${escapeHtml(SURVEY_BRAND)} Team</p>
   `;
 
   return await sendWithRetry(
@@ -439,8 +456,8 @@ export async function sendSurveyFeedbackNudgeEmail(client, token, rating) {
     {
       from: `"${SURVEY_BRAND}" <${process.env.GMAIL_USER}>`,
       to: surveyRecipient(client.email),
-      subject: "How can we do better? ✨",
-      html: emailWrapper(bodyHtml),
+      subject: "We'd love to hear how we can do better",
+      html: surveyEmailHtml(bodyHtml),
       attachments: logoAttachments(),
     },
     "SurveyFeedbackNudge",

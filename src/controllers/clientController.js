@@ -18,6 +18,7 @@ const AUDITED_CLIENT_FIELDS = [
   "notes",
 ];
 import { syncAndPersistZohoId } from "../services/zohoService.js";
+import { TZ } from "../config/timezone.js";
 import {
   getPendingReview,
   getClientOpenInvoices,
@@ -67,7 +68,7 @@ function pastServiceFilter(q, todayIso) {
 }
 
 function todayIsoInBookingTz() {
-  const tz = process.env.BOOKING_TIMEZONE || "America/Vancouver";
+  const tz = TZ;
   // en-CA da YYYY-MM-DD
   return new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(new Date());
 }
@@ -414,6 +415,13 @@ export async function createClient(req, res) {
         .json({ ok: false, error: "first_name or last_name is required" });
     }
 
+    // Tarifa obligatoria al crear un cliente desde el CRM: es el dato que más
+    // termina faltando en Payroll/facturación. La conversión automática de un
+    // lead (reserva en vivo) no se bloquea por esto.
+    if (fields.rate == null || !Number.isFinite(Number(fields.rate)) || Number(fields.rate) < 0) {
+      return res.status(400).json({ ok: false, error: "rate is required" });
+    }
+
     // Default status to active on creation
     if (!fields.status) fields.status = "active";
 
@@ -549,13 +557,18 @@ export async function searchClients(req, res) {
   const q = req.query.q?.trim() ?? "";
   if (q.length < 2) return res.json({ ok: true, clients: [] });
 
-  // Paso 1: búsqueda normal por nombre/email
+  // Entre comillas para que comas/paréntesis de una dirección no rompan el or()
+  const pattern = `%${q.replace(/[\\"]/g, "\\$&")}%`;
+
+  // Paso 1: búsqueda normal por nombre/email/dirección
   const { data: byName, error: byNameError } = await supabase
     .from("clients_with_name")
     .select(
       "id, name, first_name, last_name, email, status, transfer_sender_aliases, default_address, service_type, mobile, phone",
     )
-    .or(`name.ilike.%${q}%,email.ilike.%${q}%`)
+    .or(
+      `name.ilike."${pattern}",email.ilike."${pattern}",default_address.ilike."${pattern}"`,
+    )
     .limit(8);
 
   if (byNameError)

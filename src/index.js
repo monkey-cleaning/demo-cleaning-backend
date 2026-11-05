@@ -1,5 +1,6 @@
-process.env.TZ = "America/Vancouver";
+import "./config/timezone.js"; // primero: fija process.env.TZ antes de evaluar el resto
 
+import { TZ } from "./config/timezone.js";
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -32,6 +33,8 @@ import appointmentRoutes from "./routes/appointmentRoutes.js";
 import scheduleRoutes from "./routes/scheduleRoutes.js";
 import settingsRoutes from "./routes/settingsRoutes.js";
 import historyRoutes from "./routes/historyRoutes.js";
+import alertSuppressionRoutes from "./routes/alertSuppressionRoutes.js";
+import { getCoverageAlerts } from "./controllers/coverageAlertsController.js";
 import { startEtransferSyncJob } from "./jobs/eTransferSyncJob.js";
 import {
   getTeams,
@@ -44,6 +47,8 @@ import { generateAvailability } from "./services/availabilityGeneratorService.js
 import seoRoutes from "./routes/seoRoutes.js";
 import { startDailyDigestJob } from "./jobs/dailyDigestJob.js";
 import { startCoverageAlertJob } from "./jobs/coverageAlertJob.js";
+import { startSeriesRenewalJob } from "./jobs/seriesRenewalJob.js";
+import { startInvoiceDraftJob } from "./jobs/invoiceDraftJob.js";
 import { startConfirmationPairingJob } from "./jobs/confirmationPairingJob.js";
 import { startConfirmationReminderJob } from "./jobs/confirmationReminderJob.js";
 import { startConfirmationReleaseJob } from "./jobs/confirmationReleaseJob.js";
@@ -137,6 +142,8 @@ app.use("/api/admin/appointments", appointmentRoutes);
 app.use("/api/admin/settings", settingsRoutes);
 app.use("/api/admin/site-images", adminSiteImagesRouter); // LAB447
 app.use("/api/admin/history", historyRoutes); // LAB418 — audit trail / Activity
+app.use("/api/admin/alert-suppressions", alertSuppressionRoutes); // E4 — acuse de alertas de cobertura
+app.get("/api/admin/coverage-alerts", requireAdmin, getCoverageAlerts);
 app.get("/api/admin/teams", requireAdmin, getTeams);
 app.post("/api/admin/teams", requireAdmin, createTeam);
 app.patch("/api/admin/teams/:id", requireAdmin, updateTeam);
@@ -212,6 +219,9 @@ startDailyDigestJob();
 // Alerta diaria de cobertura: eventos de mañana sin cleaner + series recurrentes
 // por terminar + huecos en el medio de una serie. Solo lee y manda mail a ops.
 startCoverageAlertJob();
+// Renueva a diario las series "Never" (sin fin) para que no se queden sin eventos.
+startSeriesRenewalJob();
+startInvoiceDraftJob();
 // startConfirmationPairingJob();
 // startConfirmationReminderJob();
 // startConfirmationReleaseJob();
@@ -226,7 +236,7 @@ startCoverageAlertJob();
 // Expresión en UTC: Vancouver es UTC-7 (PDT) / UTC-8 (PST)
 // Con TZ=America/Vancouver en el proceso, node-cron usa esa zona directamente
 cron.schedule("50 7 * * *", runFollowUpQuoteJob, {
-  timezone: "America/Vancouver",
+  timezone: TZ,
 });
 
 // 03:00 AM Vancouver — regenera cleaning_availability para los proximos 30
@@ -240,5 +250,5 @@ cron.schedule(
     generateAvailability({ rangeDays: 30 }).catch((err) =>
       console.error("❌ [cron availability] Fallo la generacion:", err.message),
     ),
-  { timezone: "America/Vancouver" },
+  { timezone: TZ },
 );

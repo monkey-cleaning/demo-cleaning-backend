@@ -22,7 +22,7 @@ import nodemailer from "nodemailer";
 import { DateTime } from "luxon";
 import { getRawSettings } from "./settingsService.js";
 
-const TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
+import { TZ } from "../config/timezone.js";
 
 // Destinatarios fijos para fallos de envío de email a un lead — vía env var
 // (LEAD_FAILURE_ALERT_EMAILS, separado por comas) en lugar de hardcodeado,
@@ -403,7 +403,7 @@ export async function sendOpsVoiceBookingAlert(p = {}) {
 function fmtApptContext(appointment) {
   if (!appointment?.starts_at) return "";
   const dt = DateTime.fromISO(appointment.starts_at, {
-    zone: appointment.timezone || TZ,
+    zone: TZ,
   });
   const when = dt.isValid ? dt.toFormat("cccc, LLLL d 'at' h:mm a") : null;
   const addr = appointment.property_address
@@ -502,6 +502,47 @@ export async function sendOpsSmsDeliveryFailureAlert({
 }
 
 /**
+ * Alerta cuando el ENVÍO de emails al cliente falla definitivamente (agotó
+ * reintentos en lead_customer_emails). Un solo mail por corrida del job.
+ * @param {{ failures: Array<{ id: string, leadId?: string, to?: string, type?: string, attempts?: number, error: string }> }} p
+ */
+export async function sendCustomerEmailDeliveryFailureAlert({ failures }) {
+  if (!failures?.length) return;
+  try {
+    const recipients = await opsRecipients({ extraEnvKey: "LEAD_FAILURE_ALERT_EMAILS" });
+    const rowsHtml = failures
+      .map(
+        (f) => `
+      <tr>
+        <td style="padding:8px 0;border-bottom:1px solid #e2e8f0;font-size:13px;color:#334155;">
+          <b>${escapeHtml(f.to || "unknown")}</b> — ${escapeHtml(f.type || "unknown type")}<br/>
+          Lead ID: ${escapeHtml(String(f.leadId || "unknown"))} · Attempts: ${escapeHtml(String(f.attempts ?? "?"))}<br/>
+          <span style="color:#e11d48;">${escapeHtml(f.error || "Unknown error")}</span>
+        </td>
+      </tr>`,
+      )
+      .join("");
+    const bodyHtml = `
+      <p style="margin:0 0 4px;font-size:11px;font-weight:700;color:#e11d48;letter-spacing:1px;text-transform:uppercase;">Needs manual review</p>
+      <h1 style="margin:0 0 4px;font-size:20px;color:#0d1b3e;">Customer email could not be sent</h1>
+      <p style="margin:0 0 16px;font-size:14px;color:#64748b;">
+        ${failures.length} email(s) to clients failed after all retries and will not be retried automatically.
+        Contact these clients manually or requeue the rows in <code>lead_customer_emails</code>.
+      </p>
+      <table width="100%" cellpadding="0" cellspacing="0">${rowsHtml}</table>
+    `;
+    await sendOpsEmail({
+      recipients,
+      subject: `⚠️ ${failures.length} customer email(s) failed to send`,
+      bodyHtml,
+      label: "CustomerEmailDeliveryFailureAlert",
+    });
+  } catch (err) {
+    console.error("[OpsNotif] falló la alerta de envío al cliente:", err.message);
+  }
+}
+
+/**
  * LAB413 — un cliente dejó feedback de la encuesta (puntuó 1–4). Portado de Monkey.
  * @param {{ client?: { id?: string, name?: string, email?: string }, rating?: number|null, feedback?: string }} p
  */
@@ -575,16 +616,38 @@ function coverageTable(rows, cols) {
  *   gaps: Array<{ client: string, series: string, missingDate: string, kind: string, actionable: boolean }>,
  * }} p
  */
-export async function sendCoverageAlert({ dateLabel, unassigned, endingSoon, gaps }) {
+export async function sendCoverageAlert({
+  dateLabel,
+  unassigned,
+  noCoverage,
+  endingSoon,
+  gaps,
+  overlaps,
+}) {
   const recipients = await opsRecipients({
     extraEnvKey: "COVERAGE_ALERT_EXTRA_EMAILS",
   });
 
   const total =
-    (unassigned?.length || 0) + (endingSoon?.length || 0) + (gaps?.length || 0);
+    (unassigned?.length || 0) +
+    (noCoverage?.length || 0) +
+    (endingSoon?.length || 0) +
+    (gaps?.length || 0) +
+    (overlaps?.length || 0);
   if (!total) return;
 
   const sections = [];
+
+  if (noCoverage?.length) {
+    sections.push(`
+      <h2 style="margin:20px 0 4px;font-size:15px;color:#e11d48;">🔴 clients with no upcoming service (${noCoverage.length})</h2>
+      <p style="margin:0 0 4px;font-size:13px;color:#64748b;">Regular clients with a recurring series and nothing booked ahead — the series is probably broken, deleted or expired.</p>
+      ${coverageTable(noCoverage, [
+        { label: "Client", get: (r) => r.client },
+        { label: "Services (150 d)", get: (r) => r.completed },
+        { label: "Last service", get: (r) => r.lastService },
+      ])}`);
+  }
 
   if (unassigned?.length) {
     sections.push(`
@@ -619,6 +682,17 @@ export async function sendCoverageAlert({ dateLabel, unassigned, endingSoon, gap
         { label: "Series", get: (r) => r.series },
         { label: "Missing date", get: (r) => r.missingDate },
         { label: "Kind", get: (r) => (r.actionable ? `${r.kind} (act now)` : r.kind) },
+      ])}`);
+  }
+
+  if (overlaps?.length) {
+    sections.push(`
+      <h2 style="margin:20px 0 4px;font-size:15px;color:#7c3aed;">🟣 overlapping series (${overlaps.length})</h2>
+      <p style="margin:0 0 4px;font-size:13px;color:#64748b;">Two or more live series for the same client land on nearly the same days — usually a new series created without cutting the old one. If it is intentional, silence it in the Coverage panel.</p>
+      ${coverageTable(overlaps, [
+        { label: "Client", get: (r) => r.client },
+        { label: "What", get: (r) => r.detail },
+        { label: "Series", get: (r) => r.series },
       ])}`);
   }
 
@@ -700,4 +774,80 @@ export async function sendStaffComplaintAlert({ employeeName, message }) {
     bodyHtml,
     label: "StaffComplaintAlert",
   });
+}
+/**
+ * LAB462 — un cleaner mandó fotos + comentario a la oficina desde un evento
+ * ("Other photos"). Lo dispara centralSubmissionsController.createCentralSubmission
+ * después de guardar el envío; nunca lanza (el envío ya está guardado).
+ *
+ * @param {{ id: string, sentBy?: string|null, clientName?: string|null,
+ *   eventSummary?: string|null, eventStart?: string|null, location?: string|null,
+ *   comment?: string|null, photos: string[] }} submission
+ */
+export async function sendCentralSubmissionAlert(submission) {
+  try {
+    const recipients = await opsRecipients();
+    const photos = submission.photos ?? [];
+    const who = submission.sentBy || "A cleaner";
+    const what = submission.clientName || submission.eventSummary || "a visit";
+    const when = submission.eventStart
+      ? DateTime.fromISO(submission.eventStart, { zone: TZ }).toFormat("cccc, LLLL d 'at' h:mm a")
+      : null;
+    const frontend = (process.env.FRONTEND_URL || "").replace(/\/+$/, "");
+
+    const rows = [
+      ["Client", submission.clientName],
+      ["Visit", submission.eventSummary],
+      ["When", when],
+      ["Address", submission.location],
+    ]
+      .filter(([, v]) => v)
+      .map(
+        ([k, v]) => `
+      <tr>
+        <td style="padding:8px 0;border-bottom:1px solid #f1f5f9;width:26%;vertical-align:top;">
+          <span style="font-size:12px;color:#94a3b8;font-weight:600;">${k}</span>
+        </td>
+        <td style="padding:8px 0;border-bottom:1px solid #f1f5f9;vertical-align:top;">
+          <span style="font-size:13px;color:#0d1b3e;">${escapeHtml(String(v))}</span>
+        </td>
+      </tr>`,
+      )
+      .join("");
+
+    const thumbs = photos
+      .slice(0, 6)
+      .map(
+        (url) =>
+          `<a href="${escapeHtml(url)}"><img src="${escapeHtml(url)}" width="120" height="120" style="object-fit:cover;border-radius:8px;border:1px solid #e2e8f0;margin:0 6px 6px 0;" alt="" /></a>`,
+      )
+      .join("");
+
+    const bodyHtml = `
+    <p style="margin:0 0 4px;font-size:11px;font-weight:700;color:#e11d48;letter-spacing:1px;text-transform:uppercase;">Received from cleaners</p>
+    <h1 style="margin:0 0 4px;font-size:20px;color:#0d1b3e;">${escapeHtml(who)} sent ${photos.length} photo${photos.length === 1 ? "" : "s"}</h1>
+    <p style="margin:0 0 16px;font-size:14px;color:#64748b;">From ${escapeHtml(what)}</p>
+    ${
+      submission.comment
+        ? `<p style="margin:0 0 16px;padding:12px 14px;background:#f8fafc;border-left:3px solid #0d1b3e;font-size:14px;color:#0d1b3e;white-space:pre-line;">${escapeHtml(submission.comment)}</p>`
+        : ""
+    }
+    <table width="100%" cellpadding="0" cellspacing="0">${rows}</table>
+    <div style="margin-top:16px;">${thumbs}</div>
+    ${
+      frontend
+        ? `<p style="margin:16px 0 0;font-size:12px;color:#94a3b8;"><a href="${frontend}/admin/checklists" style="color:#2563eb;">Open in the dashboard</a> to see every photo and mark it as reviewed.</p>`
+        : ""
+    }
+  `;
+
+    await sendOpsEmail({
+      recipients,
+      subject: `Photos from ${who}: ${what}`,
+      bodyHtml,
+      label: "CentralSubmissionAlert",
+    });
+  } catch (err) {
+    console.error("❌ [CentralSubmissionAlert] failed:", err.message);
+  }
 }

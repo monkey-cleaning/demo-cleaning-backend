@@ -38,7 +38,7 @@ import { DateTime } from "luxon";
 import { supabase } from "../supabaseClient.js";
 import { getRawSettings } from "../services/settingsService.js";
 
-const TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
+import { TZ } from "../config/timezone.js";
 
 // Cuánto adelante mirar. 60 días alcanza y sobra: estos casos se resuelven
 // en días (recordatorio a 2 días, release a 24h), no meses.

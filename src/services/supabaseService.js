@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { createClient } from "@supabase/supabase-js";
 
+import { TZ } from "../config/timezone.js";
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
 
@@ -12,6 +13,17 @@ export const supabase = createClient(supabaseUrl, supabaseKey);
 /* ======================================================
    LEADS
 ====================================================== */
+
+/**
+ * Guarda en el lead la tarifa $/h cotizada (se calcula para el email, no al
+ * guardar el lead). No-fatal: si falla (p. ej. la migración 20260930_leads_rate
+ * todavía no corrió), el lead queda sin rate y se carga a mano después.
+ */
+export async function updateLeadRate(leadId, rate) {
+  if (!leadId || !Number.isFinite(rate)) return;
+  const { error } = await supabase.from("leads").update({ rate }).eq("id", leadId);
+  if (error) console.warn(`⚠️ updateLeadRate: no se pudo guardar rate del lead ${leadId}:`, error.message);
+}
 
 export async function saveLeadToDatabase(leadData) {
   const now = new Date().toISOString();
@@ -113,7 +125,7 @@ function mergeMessages(existing, incoming) {
   if (!incoming) return existing;
   if (!existing) return incoming;
   const timestamp = new Date().toLocaleString("en-CA", {
-    timeZone: "America/Vancouver",
+    timeZone: TZ,
   });
   return `${existing}\n\n--- New contact (${timestamp}) ---\n${incoming}`;
 }
@@ -260,6 +272,24 @@ export async function markCustomerEmailFailed(id, errMsg) {
     .from("lead_customer_emails")
     .update({
       status: "failed",
+      last_error: String(errMsg || "Unknown error"),
+    })
+    .eq("id", id);
+
+  if (error) throw error;
+}
+
+/**
+ * Reprograma un envío fallido: vuelve a pending con due_at en el futuro.
+ * Conserva `attempts` (ya se incrementó al lockear) y guarda el error.
+ */
+export async function rescheduleCustomerEmail(id, errMsg, delayMinutes = 5) {
+  const { error } = await supabase
+    .from("lead_customer_emails")
+    .update({
+      status: "pending",
+      locked_at: null,
+      due_at: new Date(Date.now() + delayMinutes * 60 * 1000).toISOString(),
       last_error: String(errMsg || "Unknown error"),
     })
     .eq("id", id);

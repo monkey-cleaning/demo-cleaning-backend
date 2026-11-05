@@ -27,7 +27,7 @@ import { supabase } from "../supabaseClient.js";
 import { getRawSettings } from "../services/settingsService.js";
 import { sendConfirmationRequestEmail } from "../services/clientNotificationService.js";
 
-const TZ = process.env.BOOKING_TIMEZONE || "America/Vancouver";
+import { TZ } from "../config/timezone.js";
 
 // ── 1. Trae los slots 'offered' sin recordatorio, dentro de la ventana ──────
 async function findSlotsNeedingReminder(reminderDaysBefore, testClientId) {
