@@ -26,19 +26,28 @@ export async function runInvoiceDraftJob({ dryRun = false } = {}) {
   const now = new Date();
   const since = new Date(now.getTime() - LOOKBACK_DAYS * 86400000);
 
-  const { data: rows, error } = await supabase
-    .from("appointments")
-    .select(
-      "id, client_id, color_id, service_type, scheduled_date, starts_at, ends_at, " +
-        "clients!fk_appointments_clients(rate), appointment_teams(employee_id)",
-    )
-    .is("invoice_id", null)
+  const columns =
+    "id, client_id, color_id, service_type, scheduled_date, starts_at, ends_at, " +
+    "clients!fk_appointments_clients(rate), appointment_teams(employee_id)";
+  const build = (withDismissed) => {
+    let q = supabase
+      .from("appointments")
+      .select(columns)
+      .is("invoice_id", null);
+    // Si la migración 20261105 no corrió, la columna no existe: se omite el filtro.
+    if (withDismissed) q = q.eq("invoice_draft_dismissed", false);
+    return q
     .not("client_id", "is", null)
     .neq("client_id", PLACEHOLDER_CLIENT_ID)
     .neq("status", "cancelled")
     .gte("ends_at", since.toISOString())
     .lt("ends_at", now.toISOString())
     .order("ends_at");
+  };
+  let { data: rows, error } = await build(true);
+  if (error && /invoice_draft_dismissed/.test(error.message)) {
+    ({ data: rows, error } = await build(false));
+  }
   if (error) {
     console.error("❌ [InvoiceDraft] query:", error.message);
     return { error: error.message };

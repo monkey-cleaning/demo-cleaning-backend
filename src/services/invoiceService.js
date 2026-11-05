@@ -246,6 +246,18 @@ export async function deleteDraftInvoice(id) {
     { field: "deleted", oldValue: "draft invoice", newValue: null },
   ]);
 
+  // Un borrador auto-creado está enlazado a su servicio (appointments.invoice_id,
+  // FK): se desenlaza y se marca como descartado para que el job no lo regenere.
+  // Si la migración 20261105 todavía no corrió, se desenlaza sin la marca.
+  let unlink = await supabase
+    .from("appointments")
+    .update({ invoice_id: null, invoice_draft_dismissed: true })
+    .eq("invoice_id", id);
+  if (unlink.error) {
+    unlink = await supabase.from("appointments").update({ invoice_id: null }).eq("invoice_id", id);
+  }
+  if (unlink.error) throw new Error(`Error desenlazando invoice: ${unlink.error.message}`);
+
   const { error } = await supabase.from("invoices").delete().eq("id", id);
   if (error) throw new Error(`Error eliminando invoice: ${error.message}`);
 
